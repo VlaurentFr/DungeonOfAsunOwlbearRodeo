@@ -1,0 +1,12 @@
+{
+  "name": "Fiche Homebrew",
+  "version": "1.0.0",
+  "manifest_version": 1,
+  "action": {
+    "title": "Fiche de Personnage",
+    "icon": "/favicon.svg",
+    "popover": "/",
+    "width": 620,
+    "height": 720
+  }
+}
