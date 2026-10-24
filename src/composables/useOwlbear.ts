@@ -120,6 +120,15 @@ export function useOwlbear() {
 				}
 			});
 
+			OBR.player.onChange(async () => {
+				await loadSelection();
+			});
+
+			// Écoute les changements globaux de la room pour synchroniser en direct
+			OBR.room.onMetadataChange(async () => {
+				await loadSelection();
+			});
+
 			const initialPlayers = await OBR.party.getPlayers();
 			roomPlayers.value = initialPlayers.map((p) => ({
 				id: p.id,
@@ -163,9 +172,6 @@ export function useOwlbear() {
 				return;
 			}
 
-			// --- FILTRAGE STRICT OWLBEOAR RODEO ---
-			// On EXCLUT explicitement la couche ATTACHMENT ainsi que les textes, cartes, décors et dessins.
-			// Une fiche ne sera chargée QUE si le pion est sur la couche 'CHARACTER' ou 'MOUNT'.
 			const isCharacterToken = item.layer === 'CHARACTER' || item.layer === 'MOUNT';
 
 			if (!isCharacterToken) {
@@ -175,8 +181,16 @@ export function useOwlbear() {
 
 			selectedTokenId.value = tokenId;
 
-			if (item.metadata && item.metadata[METADATA_KEY]) {
-				const savedData = item.metadata[METADATA_KEY] as Partial<CharacterSheet>;
+			// Détermination de la clé basée sur le nom du pion sur la carte
+			const tokenName = (item.name || 'Nouveau Personnage').trim().toLowerCase();
+			const roomMetadataKey = `character_sheet_${tokenName}`;
+
+			// Récupération des métadonnées globales de la Room
+			const roomMetadata = await OBR.room.getMetadata();
+			const savedData = (roomMetadata[roomMetadataKey] ||
+				(item.metadata ? item.metadata[METADATA_KEY] : null)) as Partial<CharacterSheet> | null;
+
+			if (savedData) {
 				sheet.value = {
 					id: tokenId,
 					name: savedData.name || item.name || 'Nouveau Personnage',
@@ -237,16 +251,31 @@ export function useOwlbear() {
 	}
 
 	async function saveSheet() {
-		if (!selectedTokenId.value || !canEdit.value) return;
-		const tokenId = selectedTokenId.value;
+		if (!canEdit.value) return;
 		const rawData = JSON.parse(JSON.stringify(toRaw(sheet.value)));
 
-		await OBR.scene.items.updateItems([tokenId], (items) => {
-			for (const item of items) {
-				if (!item.metadata) item.metadata = {};
-				item.metadata[METADATA_KEY] = rawData;
+		// Utilisation du nom du personnage pour créer une clé globale stable
+		const charName = (sheet.value.name || 'personnage').trim().toLowerCase();
+		const roomMetadataKey = `character_sheet_${charName}`;
+
+		try {
+			// 1. Sauvegarde globale dans la Room (partagée entre toutes les scènes et tous les tokens du même nom)
+			await OBR.room.setMetadata({
+				[roomMetadataKey]: rawData,
+			});
+
+			// 2. Optionnel : On garde aussi une copie sur le token sélectionné s'il existe
+			if (selectedTokenId.value) {
+				await OBR.scene.items.updateItems([selectedTokenId.value], (items) => {
+					for (const item of items) {
+						if (!item.metadata) item.metadata = {};
+						item.metadata[METADATA_KEY] = rawData;
+					}
+				});
 			}
-		});
+		} catch (e) {
+			console.error('Erreur lors de la sauvegarde de la fiche:', e);
+		}
 	}
 
 	function parseAndRollDice(diceNotation: string): { total: number; breakdown: string } {
