@@ -1,12 +1,13 @@
 {
-  "name": "Fiche Homebrew",
+  "name": "Fiche de Personnage - Dungeon of Asun",
   "version": "1.0.0",
   "manifest_version": 1,
+  "icon": "https://vlaurentfr.github.io/DungeonOfAsunOwlbearRodeo/favicon.svg",
   "action": {
     "title": "Fiche de Personnage",
-    "icon": "/favicon.svg",
-    "popover": "/",
-    "width": 620,
-    "height": 720
+    "icon": "https://vlaurentfr.github.io/DungeonOfAsunOwlbearRodeo/favicon.svg",
+    "popover": "https://vlaurentfr.github.io/DungeonOfAsunOwlbearRodeo/",
+    "height": 720,
+    "width": 620
   }
 }
