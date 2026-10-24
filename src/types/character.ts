@@ -127,6 +127,7 @@ export interface InventoryItem {
 	quantity: number;
 	description: string;
 	favorite?: boolean;
+	formula?: string;
 }
 
 // --- MAITRISES ---

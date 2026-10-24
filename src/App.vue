@@ -32,8 +32,6 @@ import {
 	Play,
 	ChevronDown,
 	ChevronUp,
-	CheckCircle2,
-	XCircle,
 } from 'lucide-vue-next';
 
 // Onglet principal
