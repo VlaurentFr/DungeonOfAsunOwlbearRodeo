@@ -8,4 +8,5 @@ export default defineConfig({
 		cors: true,
 		port: 5173,
 	},
+	base: '/DungeonOfAsunOwlbearRodeo/',
 });
