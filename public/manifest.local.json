@@ -1,0 +1,13 @@
+{
+  "name": "Fiche de Personnage - Dungeon of Asun - Local",
+  "version": "1.0.0",
+  "manifest_version": 1,
+  "icon": "http://localhost:5173/DungeonOfAsunOwlbearRodeo/favicon.svg",
+  "action": {
+    "title": "Fiche de Personnage - Dungeon of Asun",
+    "icon": "http://localhost:5173/DungeonOfAsunOwlbearRodeo/favicon.svg",
+    "popover": "http://localhost:5173/DungeonOfAsunOwlbearRodeo/",
+    "height": 720,
+    "width": 620
+  }
+}

@@ -90,6 +90,16 @@ export function useOwlbear() {
 		if (dex >= 6) return -1;
 		return 0;
 	});
+	const protectionPenalty = computed(() => {
+		const dexterity = sheet.value.armors
+			.filter((a) => a.protection > 0 && a.equipped)
+			.reduce((sum, a) => sum + a.dexMalus, 0);
+		const protection = sheet.value.armors
+			.filter((a) => a.protection > 0 && a.equipped)
+			.reduce((sum, a) => sum + a.protection, 0);
+		console.log('Calculating protection and dexterity penalties:', { protection, dexterity });
+		return { protection, dexterity };
+	});
 
 	const corruptionStatus = computed(() => {
 		const c = sheet.value.corruption;
@@ -100,6 +110,7 @@ export function useOwlbear() {
 	});
 
 	async function init() {
+		console.log('Initializing useOwlbear composable...');
 		OBR.onReady(async () => {
 			currentUserId.value = await OBR.player.getId();
 			currentUserName.value = await OBR.player.getName();
@@ -390,7 +401,11 @@ export function useOwlbear() {
 
 	// --- JET D'ATTRIBUT ---
 	async function rollStatCheck(statKey: StatName, statLabel: string, isSecret: boolean = false) {
-		const statValue = sheet.value.stats[statKey];
+		let statValue = sheet.value.stats[statKey];
+		if (statKey === 'dexterite') {
+			statValue += protectionPenalty.value.dexterity;
+		}
+
 		const diceResult = Math.floor(Math.random() * 20) + 1;
 
 		const isCritSuccess = diceResult === 1;
@@ -431,7 +446,10 @@ export function useOwlbear() {
 
 	// --- ARME : ATTAQUE ---
 	async function rollWeaponAttack(weapon: WeaponItem, isSecret: boolean = false) {
-		const statValue = sheet.value.stats[weapon.stat] || 10;
+		let statValue = sheet.value.stats[weapon.stat] || 10;
+		if (weapon.stat === 'dexterite') {
+			statValue += protectionPenalty.value.dexterity;
+		}
 		const weaponXp = sheet.value.weaponXp[weapon.weaponType] || 0;
 		const rankData = getRankFromXp(weaponXp);
 
@@ -502,7 +520,10 @@ export function useOwlbear() {
 
 	// --- SORT : INCANTATION ---
 	async function rollSpellCast(spell: SpellItem, isSecret: boolean = false) {
-		const statValue = sheet.value.stats[spell.stat || 'intellect'] || 10;
+		let statValue = sheet.value.stats[spell.stat || 'intellect'] || 10;
+		if (spell.stat === 'dexterite') {
+			statValue += protectionPenalty.value.dexterity;
+		}
 		const weaponXp = sheet.value.weaponXp[spell.weaponType || 'Magie'] || 0;
 		const rankData = getRankFromXp(weaponXp);
 
@@ -540,11 +561,19 @@ export function useOwlbear() {
 		const weaponXp = sheet.value.weaponXp[spell.weaponType || 'Magie'] || 0;
 		const rankData = getRankFromXp(weaponXp);
 
+		const weaponEquippedDamages = sheet.value.weapons
+			.filter((w) => w.weaponType === spell.weaponType && w.equipped)
+			.reduce((acc, w, index) => {
+				if (index > 0) acc += ' + ';
+				return acc + (w.damage || '1d6');
+			}, '');
+
 		let totalVal = 0;
 		let detailStr = '';
 
 		if (spell.formula && spell.formula.trim() !== '') {
 			const baseRoll = parseAndRollDice(spell.formula);
+			const weaponRoll = parseAndRollDice(weaponEquippedDamages || '1d6');
 			let masteryRollTotal = 0;
 			let masteryRollBreakdown = '';
 
@@ -554,8 +583,8 @@ export function useOwlbear() {
 				masteryRollBreakdown = ` + Maîtrise ${mRoll.breakdown}`;
 			}
 
-			totalVal = baseRoll.total + masteryRollTotal;
-			detailStr = `${baseRoll.breakdown}${masteryRollBreakdown}`;
+			totalVal = baseRoll.total + masteryRollTotal + weaponRoll.total;
+			detailStr = `${weaponRoll.breakdown} + ${baseRoll.breakdown}${masteryRollBreakdown}`;
 		} else {
 			detailStr = spell.description || 'Effet déclenché.';
 		}
@@ -765,6 +794,7 @@ export function useOwlbear() {
 		estimatedHpMax,
 		estimatedPeMax,
 		dodgePenalty,
+		protectionPenalty,
 		corruptionStatus,
 		init,
 		saveSheet,

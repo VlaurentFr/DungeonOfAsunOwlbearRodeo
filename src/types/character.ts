@@ -90,6 +90,7 @@ export interface WeaponItem {
 	stat: StatName;
 	description: string;
 	favorite?: boolean;
+	equipped?: boolean;
 }
 
 export interface ArmorItem {
@@ -99,6 +100,7 @@ export interface ArmorItem {
 	dexMalus: number;
 	description: string;
 	favorite?: boolean;
+	equipped?: boolean;
 }
 
 export interface SpellItem {

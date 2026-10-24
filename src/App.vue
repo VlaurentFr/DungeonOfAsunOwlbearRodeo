@@ -32,6 +32,7 @@ import {
 	Play,
 	ChevronDown,
 	ChevronUp,
+	Minus,
 } from 'lucide-vue-next';
 
 // Onglet principal
@@ -68,6 +69,7 @@ const {
 	estimatedHpMax,
 	estimatedPeMax,
 	dodgePenalty,
+	protectionPenalty,
 	corruptionStatus,
 	init,
 	saveSheet,
@@ -514,6 +516,118 @@ onMounted(() => {
 					</div>
 				</div>
 
+				<div class="protection-banner">
+					<div class="protection-title"><Shield :size="14" /> Indice de Protection</div>
+					<div class="protection-text">
+						Bonus protection :
+						<span class="protection-val">{{
+							protectionPenalty.protection === 0 ? '0' : protectionPenalty.protection
+						}}</span>
+					</div>
+
+					<div class="protection-title"><Skull :size="14" /> Indice de Malus</div>
+					<div class="protection-text">
+						Malus dexterité :
+						<span
+							class="protection-val"
+							:class="{ 'has-penalty': protectionPenalty.dexterity < 0 }"
+							>{{ protectionPenalty.dexterity === 0 ? '0' : protectionPenalty.dexterity }}</span
+						>
+					</div>
+				</div>
+
+				<div class="equipped-weapons">
+					<!-- Armes equipées -->
+					<div
+						v-for="weapon in sheet.weapons.filter((w) => w.equipped)"
+						:key="'fav-w-' + weapon.id"
+					>
+						<div class="fav-quick-header">
+							<span class="fav-quick-type"><Sword :size="12" /> Arme</span>
+							<span class="fav-quick-name">{{ weapon.name || 'Arme sans nom' }}</span>
+							<div class="fav-quick-actions">
+								<button
+									@click="rollWeaponAttack(weapon, isRollSecret)"
+									class="btn-weapon-roll btn-attack"
+								>
+									Attaquer
+								</button>
+								<button
+									@click="rollWeaponDamage(weapon, isRollSecret)"
+									class="btn-weapon-roll btn-damage"
+								>
+									Dégâts
+								</button>
+							</div>
+							<button
+								v-if="weapon.description"
+								@click="toggleFavoriteDesc('w-' + weapon.id)"
+								class="btn-toggle-desc"
+								title="Voir la description"
+							>
+								<component
+									:is="expandedFavorites['w-' + weapon.id] ? ChevronUp : ChevronDown"
+									:size="14"
+								/>
+							</button>
+							<button
+								@click="
+									weapon.equipped = false;
+									saveSheet();
+								"
+								class="btn-remove-fav"
+								title="Déséquiper l'arme"
+							>
+								<X :size="14" />
+							</button>
+						</div>
+						<div
+							v-if="expandedFavorites['w-' + weapon.id] && weapon.description"
+							class="equipped-quick-expanded-desc"
+						>
+							{{ weapon.description }}
+						</div>
+					</div>
+
+					<!-- Armures equipé -->
+					<div
+						v-for="armor in sheet.armors.filter((a) => a.equipped)"
+						:key="'fav-a-' + armor.id"
+					>
+						<div class="fav-quick-header">
+							<span class="fav-quick-type"><Shield :size="12" /> Armure</span>
+							<span class="fav-quick-name">{{ armor.name || 'Armure' }} (Prot: {{ armor.protection || 0 }})</span>
+							<button
+								v-if="armor.description"
+								@click="toggleFavoriteDesc('a-' + armor.id)"
+								class="btn-toggle-desc"
+								title="Voir la description"
+							>
+								<component
+									:is="expandedFavorites['a-' + armor.id] ? ChevronUp : ChevronDown"
+									:size="14"
+								/>
+							</button>
+							<button
+								@click="
+									armor.equipped = false;
+									saveSheet();
+								"
+								class="btn-remove-fav"
+								title="Déséquiper l'armure"
+							>
+								<X :size="14" />
+							</button>
+						</div>
+						<div
+							v-if="expandedFavorites['a-' + armor.id] && armor.description"
+							class="equipped-quick-expanded-desc"
+						>
+							{{ armor.description }}
+						</div>
+					</div>
+				</div>
+
 				<!-- SOUS-ONGLETS INTERNES -->
 				<div class="subtabs-navigation">
 					<button
@@ -597,6 +711,26 @@ onMounted(() => {
 							<div class="fav-quick-header">
 								<span class="fav-quick-type"><Sword :size="12" /> Arme</span>
 								<span class="fav-quick-name">{{ weapon.name || 'Arme sans nom' }}</span>
+								<button
+									v-if="!weapon.equipped"
+									@click="
+										weapon.equipped = !weapon.equipped;
+										saveSheet();
+									"
+									class="btn-add"
+								>
+									<Plus :size="12" /> Equiper
+								</button>
+								<button
+									v-else
+									@click="
+										weapon.equipped = !weapon.equipped;
+										saveSheet();
+									"
+									class="btn-add"
+								>
+									<Minus :size="12" /> Déséquiper
+								</button>
 								<button
 									v-if="weapon.description"
 									@click="toggleFavoriteDesc('w-' + weapon.id)"
@@ -708,6 +842,26 @@ onMounted(() => {
 							<div class="fav-quick-header">
 								<span class="fav-quick-type"><Shield :size="12" /> Armure</span>
 								<span class="fav-quick-name">{{ armor.name || 'Armure' }} (Prot: {{ armor.protection || 0 }})</span>
+								<button
+									v-if="!armor.equipped"
+									@click="
+										armor.equipped = !armor.equipped;
+										saveSheet();
+									"
+									class="btn-add"
+								>
+									<Plus :size="12" /> Equiper
+								</button>
+								<button
+									v-else
+									@click="
+										armor.equipped = !armor.equipped;
+										saveSheet();
+									"
+									class="btn-add"
+								>
+									<Minus :size="12" /> Déséquiper
+								</button>
 								<button
 									v-if="armor.description"
 									@click="toggleFavoriteDesc('a-' + armor.id)"
@@ -934,6 +1088,26 @@ onMounted(() => {
 										<option value="sagesse">Sagesse</option>
 									</select>
 								</label>
+								<button
+									v-if="!weapon.equipped"
+									@click="
+										weapon.equipped = !weapon.equipped;
+										saveSheet();
+									"
+									class="btn-add"
+								>
+									<Plus :size="12" /> Equiper
+								</button>
+								<button
+									v-else
+									@click="
+										weapon.equipped = !weapon.equipped;
+										saveSheet();
+									"
+									class="btn-add"
+								>
+									<Minus :size="12" /> Déséquiper
+								</button>
 							</div>
 							<textarea
 								v-model="weapon.description"
@@ -1180,6 +1354,26 @@ onMounted(() => {
 										@change="saveSheet"
 										class="small-num-input"
 								/></label>
+								<button
+									v-if="!armor.equipped"
+									@click="
+										armor.equipped = !armor.equipped;
+										saveSheet();
+									"
+									class="btn-add"
+								>
+									<Plus :size="12" /> Equiper
+								</button>
+								<button
+									v-else
+									@click="
+										armor.equipped = !armor.equipped;
+										saveSheet();
+									"
+									class="btn-add"
+								>
+									<Minus :size="12" /> Déséquiper
+								</button>
 							</div>
 							<textarea
 								v-model="armor.description"
@@ -1877,7 +2071,6 @@ onMounted(() => {
 	width: 100%;
 	box-sizing: border-box;
 }
-
 .dodge-banner {
 	background: #111827;
 	border: 1px solid #3b82f6;
@@ -1888,7 +2081,7 @@ onMounted(() => {
 	justify-content: space-between;
 	align-items: center;
 	margin: auto;
-	margin-bottom: 48px;
+	margin-bottom: 4px;
 	margin-top: 16px;
 	width: 240px;
 }
@@ -1909,6 +2102,57 @@ onMounted(() => {
 }
 .dodge-val.has-penalty {
 	color: #f87171;
+}
+
+.protection-banner {
+	background: #111827;
+	border: 1px solid #10b981;
+	border-radius: 6px;
+	padding: 6px 10px;
+	margin-bottom: 12px;
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	justify-content: space-between;
+	align-items: center;
+	margin: auto;
+	margin-bottom: 48px;
+	width: 320px;
+}
+.protection-title {
+	font-size: 0.75rem;
+	font-weight: bold;
+	color: #10b981;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+.protection-text {
+	font-size: 0.75rem;
+	color: #d1d5db;
+}
+.protection-val {
+	font-weight: bold;
+}
+.protection-val.has-penalty {
+	color: #f87171;
+}
+
+.equipped-weapons {
+	padding: 6px 8px;
+	border-radius: 8px;
+	background-color: #111827;
+	margin-bottom: 48px;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+.equipped-quick-expanded-desc {
+	font-size: 0.7rem;
+	color: #d1d5db;
+	margin-top: 4px;
+	background-color: #2563eb60;
+	padding: 4px 6px;
+	border-radius: 4px;
 }
 
 .section-title {
