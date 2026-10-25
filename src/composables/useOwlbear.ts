@@ -14,6 +14,19 @@ import {
 
 const METADATA_KEY = 'com.homebrew.sheet/characterData';
 const BROADCAST_DICE_CHANNEL = 'com.homebrew.sheet/dice_rolls';
+const BROADCAST_CHAT_CHANNEL = 'com.homebrew.sheet/chat_messages';
+
+// Définis le type d'un message de chat
+export interface ChatMessage extends DiceRollLog {
+	id: string;
+	senderId: string;
+	senderName: string;
+	senderColor: string;
+	text: string;
+	timestamp: string;
+	isWhisper?: boolean;
+	isRoll?: boolean;
+}
 
 const DEFAULT_WEAPON_XP: Record<WeaponType, number> = {
 	Epee: 0,
@@ -36,10 +49,11 @@ export function useOwlbear() {
 	const roomPlayers = ref<RoomPlayer[]>([]);
 
 	const rollLogs = ref<DiceRollLog[]>([]);
+	const chatMessages = ref<ChatMessage[]>([]);
 
 	const sheet = ref<CharacterSheet>({
 		id: '',
-		name: 'Nouveau Personnage',
+		name: 'Aucun',
 		species: 'Aucune',
 		ownerIds: [],
 		stats: { force: 10, dexterite: 10, intellect: 10, sagesse: 10 },
@@ -97,7 +111,6 @@ export function useOwlbear() {
 		const protection = sheet.value.armors
 			.filter((a) => a.protection > 0 && a.equipped)
 			.reduce((sum, a) => sum + a.protection, 0);
-		console.log('Calculating protection and dexterity penalties:', { protection, dexterity });
 		return { protection, dexterity };
 	});
 
@@ -109,13 +122,28 @@ export function useOwlbear() {
 		return { level: 'Pur', class: 'status-pur', effect: 'Aucun effet' };
 	});
 
-	async function init() {
-		console.log('Initializing useOwlbear composable...');
+	async function init(scrollToBottom: () => Promise<void>) {
 		OBR.onReady(async () => {
 			currentUserId.value = await OBR.player.getId();
 			currentUserName.value = await OBR.player.getName();
 			currentUserColor.value = await OBR.player.getColor();
 			userRole.value = await OBR.player.getRole();
+
+			OBR.broadcast.onMessage(BROADCAST_CHAT_CHANNEL, async (event) => {
+				const msg = event.data as ChatMessage;
+				// Si c'est un chuchotement (whisper), on ne l'affiche que si on est l'expéditeur ou le MJ
+				if (msg.isWhisper) {
+					if (isGM.value || msg.senderId === currentUserId.value) {
+						chatMessages.value.push(msg);
+					}
+				} else {
+					chatMessages.value.push(msg);
+				}
+
+				if (!msg.isWhisper || isGM.value || msg.senderId === currentUserId.value) {
+					await scrollToBottom(); // <-- On déclenche le scroll ici pour les autres
+				}
+			});
 
 			OBR.party.onChange((players) => {
 				roomPlayers.value = players.map((p) => ({
@@ -135,9 +163,12 @@ export function useOwlbear() {
 				await loadSelection();
 			});
 
+			initPartyOverview();
+
 			// Écoute les changements globaux de la room pour synchroniser en direct
-			OBR.room.onMetadataChange(async () => {
+			OBR.room.onMetadataChange(async (metadata) => {
 				await loadSelection();
+				updatePartyListFromMetadata(metadata);
 			});
 
 			const initialPlayers = await OBR.party.getPlayers();
@@ -168,6 +199,47 @@ export function useOwlbear() {
 			await loadSelection();
 			isReady.value = true;
 		});
+	}
+
+	async function sendChatMessage(
+		text: string,
+		isWhisper: boolean = false,
+		isRoll: boolean = false,
+		logEntry?: DiceRollLog,
+	) {
+		if (!text || text.trim() === '') return;
+
+		const now = new Date();
+		const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+
+		const message: ChatMessage = {
+			id: Date.now().toString(),
+			senderId: currentUserId.value,
+			senderName: currentUserName.value + ` (${sheet.value.name})`,
+			senderColor: currentUserColor.value,
+			playerName: currentUserName.value,
+			characterName: sheet.value.name,
+			playerColor: currentUserColor.value,
+			text: text.trim(),
+			label: text.trim(),
+			timestamp: timeStr,
+			isWhisper,
+			isRoll,
+			...logEntry,
+		};
+
+		// Affichage local immédiat pour l'expéditeur
+		if (!isWhisper || isGM.value || message.senderId === currentUserId.value) {
+			chatMessages.value.push(message);
+		}
+
+		// Envoi aux autres joueurs connectés
+		await OBR.broadcast.sendMessage(BROADCAST_CHAT_CHANNEL, message);
+	}
+
+	async function broadcastDiceRollAsChat(rollEntry: DiceRollLog) {
+		// On utilise ta fonction sendChatMessage existante en mode "jet de dé"
+		await sendChatMessage(rollEntry.label, rollEntry.isSecret, true, rollEntry);
 	}
 
 	async function loadSelection() {
@@ -320,6 +392,7 @@ export function useOwlbear() {
 			rollLogs.value.unshift(logEntry);
 		}
 		await OBR.broadcast.sendMessage(BROADCAST_DICE_CHANNEL, logEntry);
+		await broadcastDiceRollAsChat(logEntry);
 
 		// Détermination de l'icône de succès / échec pour la notification
 		let statusIcon = '';
@@ -353,35 +426,56 @@ export function useOwlbear() {
 	}
 
 	// --- LANCER LIBRE (Dés personnalisés) ---
+	// --- LANCER LIBRE (Dés personnalisés avec support multi-dés) ---
 	async function rollCustomDice(
 		diceType: number,
 		mode: 'normal' | 'advantage' | 'disadvantage',
 		bonus: number,
 		customLabel: string,
 		isSecret: boolean = false,
+		diceCount: number = 1,
 	) {
-		const roll1 = Math.floor(Math.random() * diceType) + 1;
-		let roll2 = 0;
-		let chosenRoll = roll1;
-		let modeText = '';
+		let total = 0;
+		let details = '';
+		const count = Math.max(1, diceCount);
 
-		if (mode === 'advantage') {
-			roll2 = Math.floor(Math.random() * diceType) + 1;
-			chosenRoll = Math.min(roll1, roll2);
-			modeText = ` [Avantage: ${roll1}, ${roll2}]`;
-		} else if (mode === 'disadvantage') {
-			roll2 = Math.floor(Math.random() * diceType) + 1;
-			chosenRoll = Math.max(roll1, roll2);
-			modeText = ` [Désavantage: ${roll1}, ${roll2}]`;
+		// Si on lance un seul dé avec Avantage ou Désavantage
+		if (count === 1 && mode !== 'normal') {
+			const roll1 = Math.floor(Math.random() * diceType) + 1;
+			const roll2 = Math.floor(Math.random() * diceType) + 1;
+			let chosenRoll = roll1;
+			let modeText = '';
+
+			if (mode === 'advantage') {
+				chosenRoll = Math.min(roll1, roll2);
+				modeText = ` [Avantage: ${roll1}, ${roll2}]`;
+			} else if (mode === 'disadvantage') {
+				chosenRoll = Math.max(roll1, roll2);
+				modeText = ` [Désavantage: ${roll1}, ${roll2}]`;
+			}
+
+			total = chosenRoll + bonus;
+			const bonusStr = bonus !== 0 ? (bonus > 0 ? ` +${bonus}` : ` ${bonus}`) : '';
+			details = `Résultat: ${chosenRoll}${bonusStr}${modeText}`;
+		} else {
+			// Mode normal ou multi-dés (ex: 3d6)
+			const rolls: number[] = [];
+			for (let i = 0; i < count; i++) {
+				rolls.push(Math.floor(Math.random() * diceType) + 1);
+			}
+			const sum = rolls.reduce((a, b) => a + b, 0);
+			total = sum + bonus;
+
+			const bonusStr = bonus !== 0 ? (bonus > 0 ? ` +${bonus}` : ` ${bonus}`) : '';
+			const rollsStr = rolls.length > 1 ? `(${rolls.join(' + ')})` : `${rolls[0]}`;
+			details = `Résultat: ${rollsStr}${bonusStr}`;
 		}
-
-		const total = chosenRoll + bonus;
-		const bonusStr = bonus !== 0 ? (bonus > 0 ? ` +${bonus}` : ` ${bonus}`) : '';
 
 		const now = new Date();
 		const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
 
-		const labelName = customLabel.trim() !== '' ? customLabel : `Jet de d${diceType}`;
+		const diceNotation = count > 1 ? `${count}d${diceType}` : `d${diceType}`;
+		const labelName = customLabel.trim() !== '' ? customLabel : `Jet de ${diceNotation}`;
 
 		const logEntry: DiceRollLog = {
 			id: Date.now().toString(),
@@ -391,7 +485,35 @@ export function useOwlbear() {
 			characterName: sheet.value.name || currentUserName.value,
 			label: labelName,
 			diceResult: total,
-			details: `Résultat: ${chosenRoll}${bonusStr}${modeText}`,
+			details: details,
+			isSecret,
+			timestamp: timeStr,
+		};
+
+		await broadcastLog(logEntry);
+	}
+
+	// --- JET DE FORMULE LIBRE (ex: 2d6 + 1d4 + 3) ---
+	async function executeFormulaRoll(formula: string, customLabel: string, isSecret: boolean = false) {
+		if (!formula || formula.trim() === '') return;
+
+		const parsed = parseAndRollDice(formula.trim());
+		const total = parsed.total;
+
+		const now = new Date();
+		const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+
+		const labelName = customLabel.trim() !== '' ? customLabel : `Jet de formule`;
+
+		const logEntry: DiceRollLog = {
+			id: Date.now().toString(),
+			senderId: currentUserId.value,
+			playerName: currentUserName.value,
+			playerColor: currentUserColor.value,
+			characterName: sheet.value.name || currentUserName.value,
+			label: labelName,
+			diceResult: total,
+			details: `Formule: ${formula} (${parsed.breakdown})`,
 			isSecret,
 			timestamp: timeStr,
 		};
@@ -610,14 +732,36 @@ export function useOwlbear() {
 
 	async function toggleOwner(playerId: string) {
 		if (!isGM.value) return;
+
 		const list = [...sheet.value.ownerIds];
 		const index = list.indexOf(playerId);
+		let newPrimaryOwner = '';
+
 		if (index === -1) {
+			// 1. On AJOUTE le joueur aux propriétaires de la fiche
 			list.push(playerId);
+			newPrimaryOwner = playerId; // On lui donne le contrôle du token
 		} else {
+			// 2. On RETIRE le joueur des propriétaires
 			list.splice(index, 1);
+			// S'il reste d'autres owners, on prend le premier, sinon on redonne la main au MJ
+			newPrimaryOwner = list.length > 0 ? list[0] : currentUserId.value;
 		}
+
+		// Mettre à jour la fiche locale
 		sheet.value.ownerIds = list;
+
+		// --- SYNCHRONISATION DU TOKEN SUR LA SCÈNE ---
+		if (sheet.value.id) {
+			await OBR.scene.items.updateItems([sheet.value.id], (items) => {
+				for (const item of items) {
+					// Applique le nouvel utilisateur principal qui peut déplacer le jeton
+					item.createdUserId = newPrimaryOwner;
+				}
+			});
+		}
+
+		// Sauvegarde de la fiche dans room.metadata
 		await saveSheet();
 	}
 
@@ -782,6 +926,68 @@ export function useOwlbear() {
 		}
 	}
 
+	// Liste de toutes les fiches des personnages présents dans la salle
+	const partySheets = ref<any[]>([]);
+
+	// Fonction pour charger / écouter les fiches de la room
+	async function initPartyOverview() {
+		const metadata = await OBR.room.getMetadata();
+		// Supposons que tu stockes tes fiches sous une clé structurée comme "com.homebrew.sheet/character_*"
+		// Ou tu peux parser les métadonnées de la room :
+		updatePartyListFromMetadata(metadata);
+	}
+
+	function updatePartyListFromMetadata(metadata: any) {
+		const sheets: any[] = [];
+		for (const key in metadata) {
+			if (key.startsWith('character_sheet_') && metadata[key] !== undefined && metadata[key].value !== null) {
+				sheets.push(metadata[key]);
+			}
+		}
+		partySheets.value = sheets;
+	}
+
+	async function saveCharacter(character: any) {
+		const rawData = JSON.parse(JSON.stringify(toRaw(character)));
+
+		// Utilisation du nom du personnage pour créer une clé globale stable
+		const charName = (character.name || 'personnage').trim().toLowerCase();
+		const roomMetadataKey = `character_sheet_${charName}`;
+
+		// 1. Sauvegarde globale dans la Room (partagée entre toutes les scènes et tous les tokens du même nom)
+		await OBR.room.setMetadata({
+			[roomMetadataKey]: rawData,
+		});
+	}
+
+	async function deleteMetadata(character: any, amount: number) {
+		// Utilisation du nom du personnage pour créer une clé globale stable
+		const charName = (character.name || 'personnage').trim().toLowerCase();
+		const roomMetadataKey = `character_sheet_${charName}`;
+
+		const metadata = await OBR.room.getMetadata();
+
+		metadata[roomMetadataKey] = undefined; // Supprime la clé de métadonnées
+		await OBR.room.setMetadata(metadata);
+	}
+
+	async function focusAndSelectToken(tokenId: string) {
+		if (!tokenId) return;
+
+		// 1. Récupérer les données de l'item sur la scène
+		const items = await OBR.scene.items.getItems([tokenId]);
+		if (items.length === 0) {
+			console.warn('Token introuvable sur la scène active.');
+			await OBR.player.select([]);
+			return;
+		}
+
+		const token = items[0];
+
+		// 3. Sélectionner le token
+		await OBR.player.select([token.id]);
+	}
+
 	return {
 		isReady,
 		isGM,
@@ -796,6 +1002,8 @@ export function useOwlbear() {
 		dodgePenalty,
 		protectionPenalty,
 		corruptionStatus,
+		chatMessages,
+		partySheets,
 		init,
 		saveSheet,
 		rollStatCheck,
@@ -804,6 +1012,7 @@ export function useOwlbear() {
 		rollSpellCast,
 		rollSpellEffect,
 		rollCustomDice,
+		executeFormulaRoll,
 		clearLogs,
 		addWeapon,
 		removeWeapon,
@@ -822,5 +1031,11 @@ export function useOwlbear() {
 		updatePe,
 		toggleOwner,
 		handleUseConsumable,
+		sendChatMessage,
+		initPartyOverview,
+		updatePartyListFromMetadata,
+		deleteMetadata,
+		saveCharacter,
+		focusAndSelectToken,
 	};
 }

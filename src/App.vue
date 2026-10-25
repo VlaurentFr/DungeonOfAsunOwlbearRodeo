@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, nextTick } from 'vue';
 import { useOwlbear } from './composables/useOwlbear';
 import DiceLogOverlay from './components/DiceLogOverlay.vue';
 import { type StatName, type WeaponType, getRankFromXp, SPECIES_DATA } from './types/character';
@@ -33,10 +33,14 @@ import {
 	ChevronDown,
 	ChevronUp,
 	Minus,
+	MessageCircle,
+	Crown,
+	Eye,
+	Trash,
 } from 'lucide-vue-next';
 
 // Onglet principal
-const activeTab = ref<'sheet' | 'roller' | 'logs' | 'help'>('sheet');
+const activeTab = ref<'sheet' | 'roller' | 'logs' | 'help' | 'chat' | 'gm-dashboard'>('sheet');
 
 // Sous-onglets internes de la fiche
 const activeSubTab = ref<'favorites' | 'weapons' | 'spells' | 'armors' | 'masteries' | 'feats' | 'inventory'>(
@@ -51,7 +55,6 @@ function toggleFavoriteDesc(id: string) {
 }
 
 // Paramètres du lanceur de dés libre
-const customDiceType = ref<number>(20);
 const customRollMode = ref<'normal' | 'advantage' | 'disadvantage'>('normal');
 const customBonus = ref<number>(0);
 const customLabel = ref<string>('');
@@ -71,6 +74,8 @@ const {
 	dodgePenalty,
 	protectionPenalty,
 	corruptionStatus,
+	chatMessages,
+	partySheets,
 	init,
 	saveSheet,
 	rollStatCheck,
@@ -97,6 +102,11 @@ const {
 	updatePe,
 	toggleOwner,
 	handleUseConsumable,
+	executeFormulaRoll,
+	sendChatMessage,
+	deleteMetadata,
+	saveCharacter,
+	focusAndSelectToken,
 } = useOwlbear();
 
 const statLabels: Record<StatName, string> = {
@@ -108,9 +118,31 @@ const statLabels: Record<StatName, string> = {
 
 const weaponList: WeaponType[] = ['Epee', 'Dague', 'Arc', 'Masse', 'Lance', 'Magie', 'Hache', 'Poing'];
 
-function executeCustomRoll(dice: number) {
-	customDiceType.value = dice;
-	rollCustomDice(customDiceType.value, customRollMode.value, customBonus.value, customLabel.value, isRollSecret.value);
+const customDiceCount = ref(1);
+const customFormulaInput = ref('');
+
+// Mise à jour de la fonction d'exécution du jet si tu passes la quantité de dés
+async function executeCustomRoll(diceType: number) {
+	// Transmet le nombre de dés (customDiceCount.value), le type, le mode et le bonus à useOwlbear()
+	await rollCustomDice(
+		diceType,
+		customRollMode.value,
+		customBonus.value,
+		customLabel.value,
+		isRollSecret.value,
+		customDiceCount.value,
+	);
+}
+
+const newChatMessage = ref('');
+const isChatWhisper = ref(false);
+const chatScrollContainer = ref<HTMLElement | null>(null);
+
+async function handleSendChat() {
+	if (!newChatMessage.value.trim()) return;
+	await sendChatMessage(newChatMessage.value, isChatWhisper.value);
+	newChatMessage.value = '';
+	await scrollToBottom();
 }
 
 function getStatTooltip(key: StatName): string {
@@ -139,8 +171,24 @@ function consumeItem(item: any) {
 	handleUseConsumable(item, isRollSecret.value);
 }
 
+// Fonction appelée par le bouton "Lancer" de la formule libre
+async function handleFormulaSubmit() {
+	await executeFormulaRoll(customFormulaInput.value, customLabel.value, isRollSecret.value);
+	customFormulaInput.value = ''; // Vide l'input après le lancer
+}
+
+const scrollToBottom = async () => {
+	// nextTick permet d'attendre que Vue ait bien fini d'insérer le nouveau message dans le DOM
+	await nextTick();
+	setTimeout(() => {
+		if (chatScrollContainer.value) {
+			chatScrollContainer.value.scrollTop = chatScrollContainer.value.scrollHeight;
+		}
+	}, 50); // On ajoute un petit délai pour s'assurer que le DOM est bien mis à jour
+};
+
 onMounted(() => {
-	init();
+	init(scrollToBottom);
 });
 </script>
 
@@ -163,6 +211,21 @@ onMounted(() => {
 				<Dices :size="16" /> Lanceur
 			</button>
 			<button
+				@click="
+					activeTab = 'chat';
+					scrollToBottom();
+				"
+				:class="{ active: activeTab === 'chat' }"
+				class="tab-btn"
+			>
+				<MessageCircle :size="16" /> Chat
+				<span
+					v-if="chatMessages.length > 0"
+					class="tab-badge"
+					>{{ chatMessages.length }}</span
+				>
+			</button>
+			<!-- <button
 				class="tab-btn"
 				:class="{ active: activeTab === 'logs' }"
 				@click="activeTab = 'logs'"
@@ -173,7 +236,16 @@ onMounted(() => {
 					class="tab-badge"
 					>{{ rollLogs.length }}</span
 				>
+			</button> -->
+			<button
+				v-if="isGM"
+				@click="activeTab = 'gm-dashboard'"
+				:class="{ active: activeTab === 'gm-dashboard' }"
+				class="tab-btn"
+			>
+				<Crown :size="16" /> MJ
 			</button>
+
 			<button
 				class="tab-btn"
 				:class="{ active: activeTab === 'help' }"
@@ -1635,111 +1707,214 @@ onMounted(() => {
 			class="sheet-card"
 		>
 			<div class="roller-container">
-				<h3>Lanceur de Dés Personnalisé</h3>
-
-				<div class="roller-row">
-					<label class="roller-label">Libellé du jet :</label>
-					<input
-						type="text"
-						v-model="customLabel"
-						class="roller-text-input"
-						placeholder="Ex: Jet de compétence, Test..."
-					/>
+				<div class="roller-header">
+					<h3><Dices :size="20" /> Lanceur de Dés Personnalisé</h3>
 				</div>
 
-				<div class="roller-row">
-					<label class="roller-label">Mode :</label>
-					<div class="radio-group">
+				<!-- Section Nom & Nombre de dés -->
+				<div class="roller-grid-2col">
+					<div class="roller-group">
+						<label class="roller-label">Libellé du jet :</label>
+						<input
+							type="text"
+							v-model="customLabel"
+							class="roller-text-input"
+							placeholder="Ex: Jet de perception, Dégâts de feu..."
+						/>
+					</div>
+
+					<div class="roller-group">
+						<label class="roller-label">Nombre de dés :</label>
+						<div class="dice-count-selector">
+							<button
+								@click="customDiceCount = Math.max(1, customDiceCount - 1)"
+								class="btn-count"
+							>
+								-
+							</button>
+							<input
+								type="number"
+								v-model.number="customDiceCount"
+								min="1"
+								max="20"
+								class="num-input count-input"
+							/>
+							<button
+								@click="customDiceCount++"
+								class="btn-count"
+							>
+								+
+							</button>
+						</div>
+					</div>
+				</div>
+
+				<!-- Section Mode de jet (Normal / Avantage / Désavantage) -->
+				<div class="roller-group">
+					<label class="roller-label">Mode de jet :</label>
+					<div class="radio-segmented-control">
 						<label
-							><input
+							:class="{ active: customRollMode === 'normal' }"
+							class="segmented-btn"
+						>
+							<input
 								type="radio"
 								value="normal"
 								v-model="customRollMode"
 							/>
-							Normal</label
-						>
+							<span>Normal</span>
+						</label>
 						<label
-							><input
+							:class="{ active: customRollMode === 'advantage' }"
+							class="segmented-btn mode-adv"
+						>
+							<input
 								type="radio"
 								value="advantage"
 								v-model="customRollMode"
 							/>
-							Avantage</label
-						>
+							<span>Avantage</span>
+						</label>
 						<label
-							><input
+							:class="{ active: customRollMode === 'disadvantage' }"
+							class="segmented-btn mode-dis"
+						>
+							<input
 								type="radio"
 								value="disadvantage"
 								v-model="customRollMode"
 							/>
-							Désavantage</label
-						>
+							<span>Désavantage</span>
+						</label>
 					</div>
 				</div>
 
-				<div class="roller-row">
-					<label class="roller-label">Bonus / Malus :</label>
-					<input
-						type="number"
-						v-model.number="customBonus"
-						class="num-input roller-bonus-input"
-					/>
+				<!-- Section Bonus / Malus avec raccourcis -->
+				<div class="roller-group">
+					<label class="roller-label">Modificateur (Bonus / Malus) :</label>
+					<div class="bonus-input-wrapper">
+						<input
+							type="number"
+							v-model.number="customBonus"
+							class="num-input roller-bonus-input"
+						/>
+						<div class="quick-bonus-buttons">
+							<button
+								@click="customBonus -= 2"
+								class="btn-quick-bonus"
+							>
+								-2
+							</button>
+							<button
+								@click="customBonus -= 1"
+								class="btn-quick-bonus"
+							>
+								-1
+							</button>
+							<button
+								@click="customBonus = 0"
+								class="btn-quick-bonus btn-reset"
+							>
+								0
+							</button>
+							<button
+								@click="customBonus += 1"
+								class="btn-quick-bonus"
+							>
+								+1
+							</button>
+							<button
+								@click="customBonus += 2"
+								class="btn-quick-bonus"
+							>
+								+2
+							</button>
+						</div>
+					</div>
 				</div>
 
-				<div class="roller-row">
-					<label class="checkbox-secret-label">
+				<!-- Case à cocher Masquer (Secret) -->
+				<div class="roller-group">
+					<label
+						class="checkbox-secret-label"
+						:class="{ 'is-secret': isRollSecret }"
+					>
 						<input
 							type="checkbox"
 							v-model="isRollSecret"
 						/>
-						<Lock :size="14" /> Masquer ce lancer (MJ uniquement)
+						<Lock :size="14" />
+						<span>Masquer ce lancer (Réservé au MJ / Lancer Secret)</span>
 					</label>
 				</div>
 
-				<h4 class="roller-subtitle">Choisissez votre dé à lancer :</h4>
+				<hr class="roller-divider" />
+
+				<!-- Grille de sélection des Dés -->
+				<h4 class="roller-subtitle">Lancer un dé classique :</h4>
 				<div class="dice-buttons-grid">
 					<button
 						@click="executeCustomRoll(4)"
 						class="btn-dice"
 					>
-						d4
+						<span class="dice-type">d4</span>
 					</button>
 					<button
 						@click="executeCustomRoll(6)"
 						class="btn-dice"
 					>
-						d6
+						<span class="dice-type">d6</span>
 					</button>
 					<button
 						@click="executeCustomRoll(8)"
 						class="btn-dice"
 					>
-						d8
+						<span class="dice-type">d8</span>
 					</button>
 					<button
 						@click="executeCustomRoll(10)"
 						class="btn-dice"
 					>
-						d10
+						<span class="dice-type">d10</span>
 					</button>
 					<button
 						@click="executeCustomRoll(12)"
 						class="btn-dice"
 					>
-						d12
+						<span class="dice-type">d12</span>
 					</button>
 					<button
 						@click="executeCustomRoll(20)"
 						class="btn-dice btn-dice-main"
 					>
-						d20
+						<span class="dice-type">d20</span>
 					</button>
 					<button
 						@click="executeCustomRoll(100)"
 						class="btn-dice"
 					>
-						d100
+						<span class="dice-type">d100</span>
 					</button>
+				</div>
+
+				<!-- Optionnel : Formule Libre -->
+				<div class="custom-formula-row">
+					<label class="roller-label">Ou formule personnalisée :</label>
+					<div class="formula-input-group">
+						<input
+							type="text"
+							v-model="customFormulaInput"
+							placeholder="Ex: 2d6 + 1d4 + 3"
+							class="roller-text-input"
+							@keyup.enter="handleFormulaSubmit"
+						/>
+						<button
+							@click="handleFormulaSubmit"
+							class="btn-formula-submit"
+						>
+							Lancer
+						</button>
+					</div>
 				</div>
 			</div>
 		</div>
@@ -1755,7 +1930,365 @@ onMounted(() => {
 			/>
 		</div>
 
-		<!-- ONGLET 4 : AIDE / RÈGLES -->
+		<!-- ONGLET 4 : CHAT -->
+		<div
+			v-else-if="activeTab === 'chat'"
+			class="sheet-card"
+		>
+			<div class="chat-container">
+				<div class="chat-header">
+					<h3>Chat de la Table</h3>
+				</div>
+
+				<!-- Zone d'affichage des messages -->
+				<div
+					class="chat-messages-box"
+					ref="chatScrollContainer"
+				>
+					<div
+						v-if="chatMessages.length === 0"
+						class="chat-empty"
+					>
+						Aucun message pour l'instant. Discutez ou écrivez des actions ici !
+					</div>
+					<div
+						v-for="msg in chatMessages"
+						:key="msg.id"
+						class="chat-message"
+						:class="{
+							'log-card': msg.isRoll,
+							'chat-whisper': msg.isWhisper,
+							'is-crit-success': msg.isCritSuccess,
+							'is-crit-fail': msg.isCritFailure,
+							'is-success': msg.isSuccess === true,
+							'is-fail': msg.isSuccess === false,
+							'is-secret-card': msg.isSecret,
+						}"
+						:style="{ backgroundColor: `${!msg.isRoll ? msg.senderColor + '20' : ''}` }"
+					>
+						<div
+							class="chat-message-header"
+							v-if="!msg.isRoll"
+						>
+							<span
+								class="chat-author"
+								:style="{ color: msg.senderColor }"
+							>
+								● {{ msg.senderName }}
+							</span>
+							<span
+								v-if="msg.isWhisper"
+								class="badge-whisper"
+								>Chuchotement (MJ)</span
+							>
+							<span class="chat-time">{{ msg.timestamp }}</span>
+						</div>
+						<div
+							class="chat-text"
+							v-if="!msg.isRoll"
+						>
+							{{ msg.text }}
+						</div>
+						<div
+							class="log-top"
+							v-if="msg.isRoll"
+						>
+							<span
+								class="player-tag"
+								:style="{ color: msg.playerColor }"
+							>
+								● {{ msg.playerName }} ({{ msg.characterName }})
+							</span>
+							<div class="log-top-right">
+								<span
+									v-if="msg.isSecret"
+									class="secret-badge"
+									>Secret</span
+								>
+								<span class="time">{{ msg.timestamp.slice(0, 5) }}</span>
+							</div>
+						</div>
+
+						<div
+							class="log-content"
+							v-if="msg.isRoll"
+						>
+							<span class="log-label">{{ msg.label }}</span>
+
+							<div class="log-result-box">
+								<span class="dice-val">{{ msg.diceResult }}</span>
+								<span
+									v-if="msg.statValue !== undefined"
+									class="versus"
+									>vs {{ msg.statValue }}</span
+								>
+							</div>
+						</div>
+
+						<div
+							v-if="msg.details && msg.isRoll"
+							class="log-details"
+						>
+							{{ msg.details }}
+						</div>
+
+						<div
+							v-if="msg.isSuccess !== undefined && msg.isRoll"
+							class="log-status"
+						>
+							<span
+								v-if="msg.isCritSuccess"
+								class="status-badge crit-success"
+								>CRITIQUE !</span
+							>
+							<span
+								v-else-if="msg.isCritFailure"
+								class="status-badge crit-fail"
+								>ÉCHEC CRITIQUE !</span
+							>
+							<span
+								v-else-if="msg.isSuccess"
+								class="status-badge success"
+								>RÉUSSITE</span
+							>
+							<span
+								v-else
+								class="status-badge fail"
+								>ÉCHEC</span
+							>
+						</div>
+					</div>
+				</div>
+
+				<!-- Zone de saisie du message -->
+				<div class="chat-input-area">
+					<input
+						type="text"
+						v-model="newChatMessage"
+						@keyup.enter="handleSendChat"
+						placeholder="Écrire un message ou une action..."
+						class="roller-text-input"
+					/>
+					<label
+						class="chat-whisper-checkbox"
+						v-if="!isGM"
+					>
+						<input
+							type="checkbox"
+							v-model="isChatWhisper"
+						/>
+						MJ
+					</label>
+					<button
+						@click="handleSendChat"
+						class="chat-btn-formula-submit"
+					>
+						Envoyer
+					</button>
+				</div>
+			</div>
+		</div>
+
+		<div
+			v-else-if="activeTab === 'gm-dashboard' && isGM"
+			class="sheet-card"
+		>
+			<div class="gm-dashboard-container">
+				<div class="chat-header">
+					<h3>État de la Compagnie ({{ partySheets.filter((c) => c.ownerIds.length > 0).length }} personnages)</h3>
+				</div>
+				<div class="gm-global-infos">
+					<p>
+						Pv Global :
+						{{ partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.hpCurrent || 0), 0) }}
+						/
+						{{ partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.hpMax || 0), 0) }} ({{
+							Math.round(
+								(partySheets
+									.filter((c) => c.ownerIds.length > 0)
+									.reduce((acc, char) => acc + (char.hpCurrent || 0), 0) /
+									partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.hpMax || 0), 0)) *
+									100,
+							)
+						}}%)
+					</p>
+					<p>
+						Pe Global :
+						{{ partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.peCurrent || 0), 0) }}
+						/
+						{{ partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.peMax || 0), 0) }} ({{
+							Math.round(
+								(partySheets
+									.filter((c) => c.ownerIds.length > 0)
+									.reduce((acc, char) => acc + (char.peCurrent || 0), 0) /
+									partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.peMax || 0), 0)) *
+									100,
+							)
+						}}%)
+					</p>
+				</div>
+
+				<div class="party-grid">
+					<div
+						v-for="char in partySheets.filter((c) => c.ownerIds.length > 0)"
+						:key="char.id"
+						class="party-card"
+					>
+						<div class="party-card-header">
+							<div style="display: flex; gap: 8px">
+								<span class="party-char-name">{{ char.name || 'Inconnu' }}</span>
+								<button
+									@click="
+										async () => {
+											await focusAndSelectToken(char.id);
+											activeTab = 'sheet';
+											activeSubTab = 'favorites';
+										}
+									"
+									class="btn-add"
+								>
+									<Eye :size="12" />
+								</button>
+							</div>
+						</div>
+
+						<div class="party-card-stats">
+							<!-- Gestion rapide des PV -->
+							<div class="stat-row">
+								<span
+									>PV : <strong>{{ char.hpCurrent || 0 }} / {{ char.hpMax || 0 }}</strong> ({{
+										Math.round(((char.hpCurrent || 0) / (char.hpMax || 1)) * 100)
+									}}%)</span
+								>
+							</div>
+							<div class="stat-row">
+								<span
+									>PE : <strong>{{ char.peCurrent || 0 }} / {{ char.peMax || 0 }}</strong></span
+								>
+							</div>
+						</div>
+					</div>
+				</div>
+				<div class="chat-header">
+					<h3>Autres fiches</h3>
+				</div>
+				<div class="party-grid">
+					<div
+						v-for="char in partySheets.filter((c) => c.ownerIds.length === 0)"
+						:key="char.id"
+						class="party-card"
+					>
+						<div class="party-card-header">
+							<div style="display: flex; gap: 8px">
+								<span class="party-char-name">{{ char.name || 'Inconnu' }}</span>
+								<button
+									@click="
+										async () => {
+											await focusAndSelectToken(char.id);
+											activeTab = 'sheet';
+											activeSubTab = 'favorites';
+										}
+									"
+									class="btn-add"
+								>
+									<Eye :size="12" />
+								</button>
+							</div>
+							<button
+								@click="deleteMetadata(char)"
+								class="btn-add btn-damage"
+							>
+								<Trash :size="12" />
+							</button>
+						</div>
+
+						<div class="party-card-stats">
+							<!-- Gestion rapide des PV -->
+							<div class="stat-row">
+								<span
+									>PV :
+									<input
+										type="number"
+										v-model.number="char.hpCurrent"
+										@change="saveCharacter(char)"
+										class="num-input"
+									/>
+									<span>/</span>
+									<input
+										type="number"
+										v-model.number="char.hpMax"
+										@change="saveCharacter(char)"
+										class="num-input"
+									/>
+									({{ Math.round(((char.hpCurrent || 0) / (char.hpMax || 1)) * 100) }}%)</span
+								>
+								<div class="hp-quick-buttons">
+									<button
+										@click="
+											char.hpCurrent = Math.max(0, (char.hpCurrent || 0) - 1);
+											saveCharacter(char);
+										"
+										class="btn-hp-mod"
+									>
+										-1
+									</button>
+									<button
+										@click="
+											char.hpCurrent = Math.min(char.hpMax || 0, (char.hpCurrent || 0) + 1);
+											saveCharacter(char);
+										"
+										class="btn-hp-mod"
+									>
+										+1
+									</button>
+								</div>
+							</div>
+							<div class="stat-row">
+								<span
+									>PE :
+									<input
+										type="number"
+										v-model.number="char.peCurrent"
+										@change="saveCharacter(char)"
+										class="num-input"
+									/>
+									<span>/</span>
+									<input
+										type="number"
+										v-model.number="char.peMax"
+										@change="saveCharacter(char)"
+										class="num-input"
+									/>
+									({{ Math.round(((char.peCurrent || 0) / (char.peMax || 1)) * 100) }}%)</span
+								>
+								<div class="hp-quick-buttons">
+									<button
+										@click="
+											char.peCurrent = Math.max(0, (char.peCurrent || 0) - 1);
+											saveCharacter(char);
+										"
+										class="btn-hp-mod"
+									>
+										-1
+									</button>
+									<button
+										@click="
+											char.peCurrent = Math.min(char.peMax || 0, (char.peCurrent || 0) + 1);
+											saveCharacter(char);
+										"
+										class="btn-hp-mod"
+									>
+										+1
+									</button>
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- ONGLET 5 : AIDE / RÈGLES -->
 		<div
 			v-else-if="activeTab === 'help'"
 			class="sheet-card"
@@ -2902,7 +3435,7 @@ onMounted(() => {
 	border: 1px solid #4b5563;
 	color: #fff;
 	border-radius: 4px;
-	padding: 6px;
+	padding: 10px;
 	font-size: 0.8rem;
 	width: 100%;
 	box-sizing: border-box;
@@ -2953,6 +3486,223 @@ onMounted(() => {
 }
 .btn-dice-main:hover {
 	background: #1d4ed8;
+}
+.roller-container {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	padding: 10px;
+}
+
+.roller-header h3 {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 0;
+}
+
+.roller-grid-2col {
+	display: grid;
+	grid-template-columns: 2fr 1fr;
+	gap: 12px;
+}
+
+.roller-group {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.roller-label {
+	font-size: 0.85rem;
+	font-weight: 600;
+	color: #a1a1aa;
+}
+
+/* Control segmenté pour Normal / Avantage / Désavantage */
+.radio-segmented-control {
+	display: flex;
+	background: #18181b;
+	border-radius: 8px;
+	padding: 3px;
+	border: 1px solid #27272a;
+}
+
+.segmented-btn {
+	flex: 1;
+	text-align: center;
+	padding: 6px 10px;
+	font-size: 0.8rem;
+	cursor: pointer;
+	border-radius: 6px;
+	transition: all 0.2s ease;
+	user-select: none;
+}
+
+.segmented-btn input {
+	display: none;
+}
+
+.segmented-btn.active {
+	background: #3f3f46;
+	color: #fff;
+	font-weight: bold;
+}
+
+.segmented-btn.mode-adv.active {
+	background: #15803d;
+}
+
+.segmented-btn.mode-dis.active {
+	background: #b91c1c;
+}
+
+/* Modificateur avec boutons rapides */
+.bonus-input-wrapper {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.roller-bonus-input {
+	width: 70px;
+	text-align: center;
+	padding: 4px;
+}
+
+.quick-bonus-buttons {
+	display: flex;
+	gap: 4px;
+}
+
+.btn-quick-bonus {
+	background: #27272a;
+	border: 1px solid #3f3f46;
+	color: #e4e4e7;
+	border-radius: 4px;
+	padding: 4px 8px;
+	font-size: 0.75rem;
+	cursor: pointer;
+}
+
+.btn-quick-bonus:hover {
+	background: #3f3f46;
+}
+
+/* Grille des Dés */
+.dice-buttons-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(60px, 1fr));
+	gap: 8px;
+}
+
+.btn-dice {
+	background: linear-gradient(135deg, #27272a, #18181b);
+	border: 1px solid #3f3f46;
+	border-radius: 8px;
+	padding: 12px 6px;
+	color: #fff;
+	font-weight: bold;
+	cursor: pointer;
+	transition:
+		transform 0.1s ease,
+		border-color 0.2s ease;
+}
+
+.btn-dice:hover {
+	transform: translateY(-2px);
+	border-color: #a1a1aa;
+}
+
+.btn-dice-main {
+	background: linear-gradient(135deg, #4f46e5, #3730a3);
+	border-color: #6366f1;
+}
+
+.roller-divider {
+	border: none;
+	border-top: 1px solid #27272a;
+	margin: 8px 0;
+}
+
+/* --- Styles pour les sélecteurs de quantité (+ / -) --- */
+.dice-count-selector {
+	display: flex;
+	align-items: center;
+	background: #18181b;
+	border: 1px solid #27272a;
+	border-radius: 8px;
+	overflow: hidden;
+	width: fit-content;
+}
+
+.btn-count {
+	background: #27272a;
+	border: none;
+	color: #e4e4e7;
+	padding: 8px 12px;
+	cursor: pointer;
+	font-weight: bold;
+	font-size: 1rem;
+	transition: background 0.2s ease;
+}
+
+.btn-count:hover {
+	background: #3f3f46;
+	color: #fff;
+}
+
+.count-input {
+	width: 45px;
+	text-align: center;
+	background: transparent;
+	border: none;
+	color: #fff;
+	font-weight: bold;
+	font-size: 0.95rem;
+}
+
+/* Supprime les flèches natives moches de l'input number */
+.count-input::-webkit-inner-spin-button,
+.count-input::-webkit-outer-spin-button {
+	-webkit-appearance: none;
+	margin: 0;
+}
+
+/* --- Section Formule personnalisée & Bouton Lancer --- */
+.custom-formula-row {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-top: 4px;
+}
+
+.formula-input-group {
+	display: flex;
+	gap: 8px;
+}
+
+.formula-input-group .roller-text-input {
+	flex: 1;
+}
+
+.btn-formula-submit {
+	background: linear-gradient(135deg, #4f46e5, #3730a3);
+	border: 1px solid #6366f1;
+	color: #fff;
+	font-weight: bold;
+	padding: 0 16px;
+	border-radius: 8px;
+	cursor: pointer;
+	transition:
+		transform 0.1s ease,
+		filter 0.2s ease;
+	white-space: nowrap;
+}
+
+.btn-formula-submit:hover {
+	filter: brightness(1.1);
+	transform: translateY(-1px);
 }
 
 .qty-wrapper {
@@ -3183,5 +3933,360 @@ input::-webkit-inner-spin-button {
 }
 input[type='number'] {
 	-moz-appearance: textfield;
+}
+
+.chat-container {
+	display: flex;
+	flex-direction: column;
+	height: 600px;
+	gap: 10px;
+}
+
+.chat-btn-formula-submit {
+	background: linear-gradient(135deg, #4f46e5, #3730a3);
+	border: 1px solid #6366f1;
+	color: #fff;
+	font-weight: bold;
+	padding: 8px 16px;
+	border-radius: 8px;
+	cursor: pointer;
+	transition:
+		transform 0.1s ease,
+		filter 0.2s ease;
+	white-space: nowrap;
+}
+
+.chat-messages-box {
+	height: 420px; /* <-- Donne une hauteur fixe ou min/max */
+	max-height: 420px; /* <-- Empêche le conteneur de dépasser */
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.chat-empty {
+	color: #71717a;
+	text-align: center;
+	margin-top: auto;
+	margin-bottom: auto;
+	font-size: 0.85rem;
+	font-style: italic;
+}
+
+.chat-message {
+	background: #27272a;
+	border-radius: 6px;
+	padding: 8px 10px;
+	font-size: 0.9rem;
+	border-left: 3px solid transparent;
+}
+
+.chat-message.chat-whisper {
+	background: #2e1065;
+	border-left-color: #8b5cf6;
+}
+
+.chat-message-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 4px;
+	font-size: 0.75rem;
+}
+
+.chat-author {
+	font-weight: bold;
+}
+
+.chat-time {
+	color: #a1a1aa;
+}
+
+.badge-whisper {
+	color: #c084fc;
+	font-weight: bold;
+}
+
+.chat-text {
+	color: #f4f4f5;
+	word-break: break-word;
+}
+
+.chat-input-area {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.chat-whisper-checkbox {
+	font-size: 0.75rem;
+	color: #a1a1aa;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.chat-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	border-bottom: 1px solid #374151;
+	padding-bottom: 8px;
+}
+.chat-header h3 {
+	font-size: 0.9rem;
+	margin: 0;
+	color: #f3f4f6;
+}
+
+.logs-container {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+.logs-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	border-bottom: 1px solid #374151;
+	padding-bottom: 8px;
+}
+.logs-header h3 {
+	font-size: 0.9rem;
+	margin: 0;
+	color: #f3f4f6;
+}
+.btn-clear {
+	background: #374151;
+	color: #d1d5db;
+	border: none;
+	border-radius: 4px;
+	padding: 3px 8px;
+	font-size: 0.75rem;
+	cursor: pointer;
+}
+.btn-clear:hover {
+	background: #4b5563;
+}
+.logs-list {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.no-logs {
+	font-size: 0.8rem;
+	color: #6b7280;
+	text-align: center;
+	padding: 20px 0;
+	font-style: italic;
+}
+
+.log-card {
+	background: #111827;
+	border-radius: 6px;
+	padding: 8px;
+	border-left: 4px solid #6b7280;
+}
+.log-card.is-success {
+	border-left-color: #10b981;
+}
+.log-card.is-fail {
+	border-left-color: #ef4444;
+}
+.log-card.is-crit-success {
+	border-left-color: #f59e0b;
+	background: rgba(245, 158, 11, 0.1);
+}
+.log-card.is-crit-fail {
+	border-left-color: #881337;
+	background: rgba(136, 19, 55, 0.2);
+}
+.log-card.is-secret-card {
+	background: #1e1b4b;
+	border-left-color: #818cf8;
+}
+
+.log-top {
+	display: flex;
+	justify-content: space-between;
+	font-size: 0.7rem;
+	margin-bottom: 4px;
+}
+.log-top-right {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.player-tag {
+	font-weight: bold;
+}
+.time {
+	color: #6b7280;
+}
+.secret-badge {
+	background: #4338ca;
+	color: #c7d2fe;
+	padding: 1px 4px;
+	border-radius: 3px;
+	font-size: 0.65rem;
+	font-weight: bold;
+}
+
+.log-content {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+}
+.log-label {
+	font-size: 0.8rem;
+	font-weight: bold;
+	color: #e5e7eb;
+}
+.log-result-box {
+	display: flex;
+	align-items: baseline;
+	gap: 4px;
+}
+.dice-val {
+	font-size: 1.2rem;
+	font-weight: bold;
+	color: #fff;
+}
+.versus {
+	font-size: 0.75rem;
+	color: #9ca3af;
+}
+
+.log-details {
+	font-size: 0.7rem;
+	color: #9ca3af;
+	margin-top: 2px;
+	font-style: italic;
+}
+
+.log-status {
+	margin-top: 4px;
+	text-align: right;
+}
+.status-badge {
+	font-size: 0.65rem;
+	font-weight: bold;
+	padding: 2px 6px;
+	border-radius: 3px;
+	text-transform: uppercase;
+}
+.status-badge.success {
+	background: #065f46;
+	color: #a7f3d0;
+}
+.status-badge.fail {
+	background: #7f1d1d;
+	color: #fecaca;
+}
+.status-badge.crit-success {
+	background: #d97706;
+	color: #fef3c7;
+}
+.status-badge.crit-fail {
+	background: #881337;
+	color: #fecdd3;
+}
+
+.gm-dashboard-container {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 10px;
+}
+
+.gm-dashboard-container p {
+	font-size: 0.75rem;
+	color: #9ca3af;
+	margin: 0;
+}
+
+.gm-global-infos {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	justify-content: space-between;
+	align-items: center;
+	gap: 12px;
+}
+
+.party-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+	gap: 10px;
+	max-height: 450px;
+	overflow-y: auto;
+}
+
+.party-card {
+	background: #18181b;
+	border: 1px solid #27272a;
+	border-radius: 8px;
+	padding: 10px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.party-card-header {
+	border-bottom: 1px solid #27272a;
+	padding-bottom: 6px;
+	display: flex;
+	justify-content: space-between;
+}
+
+.party-char-name {
+	font-weight: bold;
+	font-size: 0.95rem;
+	color: #f4f4f5;
+	display: block;
+}
+
+.party-player-name {
+	font-size: 0.75rem;
+	color: #a1a1aa;
+}
+
+.party-card-stats {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	font-size: 0.85rem;
+}
+
+.stat-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+}
+
+.hp-quick-buttons {
+	display: flex;
+	gap: 4px;
+}
+
+.btn-hp-mod {
+	background: #27272a;
+	border: 1px solid #3f3f46;
+	color: #fff;
+	padding: 2px 6px;
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: 0.75rem;
+}
+
+.btn-hp-mod:hover {
+	background: #3f3f46;
+}
+
+.btn-gm-tab {
+	background: linear-gradient(135deg, #7c3aed, #4c1d95) !important;
+	border-color: #8b5cf6 !important;
 }
 </style>
