@@ -142,12 +142,12 @@ export interface WeaponRankDetails {
 }
 
 export const RANK_TABLE: WeaponRankDetails[] = [
-	{ rank: 'H', dice: '+2d12', hitBonus: 4, bonusCount: 1, xpRequired: 400 },
-	{ rank: 'M', dice: '+1d20', hitBonus: 3, bonusCount: 2, xpRequired: 275 },
-	{ rank: 'S', dice: '+1d12', hitBonus: 3, bonusCount: 1, xpRequired: 180 },
-	{ rank: 'A', dice: '+1d10', hitBonus: 2, bonusCount: 1, xpRequired: 110 },
+	{ rank: 'H', dice: '+2d12', hitBonus: 4, bonusCount: 5, xpRequired: 400 },
+	{ rank: 'M', dice: '+1d20', hitBonus: 3, bonusCount: 4, xpRequired: 275 },
+	{ rank: 'S', dice: '+1d12', hitBonus: 3, bonusCount: 3, xpRequired: 180 },
+	{ rank: 'A', dice: '+1d10', hitBonus: 2, bonusCount: 2, xpRequired: 110 },
 	{ rank: 'B', dice: '+1d8', hitBonus: 2, bonusCount: 1, xpRequired: 65 },
-	{ rank: 'C', dice: '+1d6', hitBonus: 1, bonusCount: 1, xpRequired: 35 },
+	{ rank: 'C', dice: '+1d6', hitBonus: 1, bonusCount: 0, xpRequired: 35 },
 	{ rank: 'D', dice: '+1d4', hitBonus: 1, bonusCount: 0, xpRequired: 15 },
 	{ rank: 'E', dice: 'Aucun', hitBonus: 0, bonusCount: 0, xpRequired: 0 },
 ];

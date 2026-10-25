@@ -13,7 +13,6 @@ import {
 } from '../types/character';
 
 const METADATA_KEY = 'com.homebrew.sheet/characterData';
-const BROADCAST_DICE_CHANNEL = 'com.homebrew.sheet/dice_rolls';
 const BROADCAST_CHAT_CHANNEL = 'com.homebrew.sheet/chat_messages';
 
 // Définis le type d'un message de chat
@@ -48,7 +47,6 @@ export function useOwlbear() {
 	const selectedTokenId = ref<string | null>(null);
 	const roomPlayers = ref<RoomPlayer[]>([]);
 
-	const rollLogs = ref<DiceRollLog[]>([]);
 	const chatMessages = ref<ChatMessage[]>([]);
 
 	const sheet = ref<CharacterSheet>({
@@ -113,6 +111,21 @@ export function useOwlbear() {
 			.reduce((sum, a) => sum + a.protection, 0);
 		return { protection, dexterity };
 	});
+	const dodgePenaltyChar = (char: CharacterSheet) => {
+		const dex = char.stats.dexterite;
+		if (dex >= 12) return -4;
+		if (dex >= 10) return -3;
+		if (dex >= 8) return -2;
+		if (dex >= 6) return -1;
+		return 0;
+	};
+	const protectionPenaltyChar = (char: CharacterSheet) => {
+		const dexterity = char.armors.filter((a) => a.protection > 0 && a.equipped).reduce((sum, a) => sum + a.dexMalus, 0);
+		const protection = char.armors
+			.filter((a) => a.protection > 0 && a.equipped)
+			.reduce((sum, a) => sum + a.protection, 0);
+		return { protection, dexterity };
+	};
 
 	const corruptionStatus = computed(() => {
 		const c = sheet.value.corruption;
@@ -178,19 +191,6 @@ export function useOwlbear() {
 				color: p.color,
 				role: p.role,
 			}));
-
-			// FILTRAGE DES LOGS SECRETS
-			OBR.broadcast.onMessage(BROADCAST_DICE_CHANNEL, (event) => {
-				const log = event.data as DiceRollLog;
-				if (log.isSecret) {
-					// Visible uniquement par le MJ ou par l'auteur du jet
-					if (isGM.value || log.senderId === currentUserId.value) {
-						rollLogs.value.unshift(log);
-					}
-				} else {
-					rollLogs.value.unshift(log);
-				}
-			});
 
 			OBR.player.onChange(async () => {
 				await loadSelection();
@@ -388,10 +388,6 @@ export function useOwlbear() {
 
 	// Helper pour envoyer le log et gérer la notification
 	async function broadcastLog(logEntry: DiceRollLog) {
-		if (!logEntry.isSecret || isGM.value || logEntry.senderId === currentUserId.value) {
-			rollLogs.value.unshift(logEntry);
-		}
-		await OBR.broadcast.sendMessage(BROADCAST_DICE_CHANNEL, logEntry);
 		await broadcastDiceRollAsChat(logEntry);
 
 		// Détermination de l'icône de succès / échec pour la notification
@@ -410,7 +406,7 @@ export function useOwlbear() {
 		}
 
 		// Construction du texte de la notification
-		let notifText = `${statusIcon}${critStatus} ${logEntry.characterName} : ${logEntry.label}`;
+		let notifText = `${statusIcon}${critStatus} ${logEntry.playerName} : ${logEntry.label}`;
 		if (logEntry.diceResult !== undefined) notifText += ` (Dé : ${logEntry.diceResult})`;
 
 		// Notification selon le caractère secret ou public du jet
@@ -421,7 +417,7 @@ export function useOwlbear() {
 			OBR.notification.show(`🔒 [SECRET] ${notifText}`);
 		} else {
 			// Pour les joueurs, un jet secret n'affiche pas le détail direct par discrétion
-			OBR.notification.show(`🔒 [SECRET] ${logEntry.characterName} a effectué un jet masqué.`);
+			OBR.notification.show(`🔒 [SECRET] ${logEntry.playerName} a effectué un jet masqué.`);
 		}
 	}
 
@@ -870,10 +866,6 @@ export function useOwlbear() {
 		await saveSheet();
 	}
 
-	function clearLogs() {
-		rollLogs.value = [];
-	}
-
 	async function handleUseConsumable(item: any, isSecret: boolean) {
 		const currentQty = item.quantity ?? 1;
 		if (currentQty <= 0) return;
@@ -940,7 +932,7 @@ export function useOwlbear() {
 	function updatePartyListFromMetadata(metadata: any) {
 		const sheets: any[] = [];
 		for (const key in metadata) {
-			if (key.startsWith('character_sheet_') && metadata[key] !== undefined && metadata[key].value !== null) {
+			if (key.startsWith('character_sheet_') && metadata[key] !== undefined && metadata[key] !== null) {
 				sheets.push(metadata[key]);
 			}
 		}
@@ -960,15 +952,13 @@ export function useOwlbear() {
 		});
 	}
 
-	async function deleteMetadata(character: any, amount: number) {
-		// Utilisation du nom du personnage pour créer une clé globale stable
+	async function deleteMetadata(character: any) {
 		const charName = (character.name || 'personnage').trim().toLowerCase();
 		const roomMetadataKey = `character_sheet_${charName}`;
 
-		const metadata = await OBR.room.getMetadata();
-
-		metadata[roomMetadataKey] = undefined; // Supprime la clé de métadonnées
-		await OBR.room.setMetadata(metadata);
+		await OBR.room.setMetadata({
+			[roomMetadataKey]: undefined,
+		});
 	}
 
 	async function focusAndSelectToken(tokenId: string) {
@@ -995,12 +985,13 @@ export function useOwlbear() {
 		selectedTokenId,
 		sheet,
 		roomPlayers,
-		rollLogs,
 		currentSpeciesData,
 		estimatedHpMax,
 		estimatedPeMax,
 		dodgePenalty,
 		protectionPenalty,
+		dodgePenaltyChar,
+		protectionPenaltyChar,
 		corruptionStatus,
 		chatMessages,
 		partySheets,
@@ -1013,7 +1004,6 @@ export function useOwlbear() {
 		rollSpellEffect,
 		rollCustomDice,
 		executeFormulaRoll,
-		clearLogs,
 		addWeapon,
 		removeWeapon,
 		addArmor,

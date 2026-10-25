@@ -1,14 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, nextTick } from 'vue';
 import { useOwlbear } from './composables/useOwlbear';
-import DiceLogOverlay from './components/DiceLogOverlay.vue';
 import { type StatName, type WeaponType, getRankFromXp, SPECIES_DATA } from './types/character';
 
 // Importation des icônes propres depuis Lucide (avec CheckCircle2 et XCircle)
 import {
 	Scroll,
 	Dices,
-	ClipboardList,
 	BookOpen,
 	Lock,
 	Leaf,
@@ -67,7 +65,6 @@ const {
 	selectedTokenId,
 	sheet,
 	roomPlayers,
-	rollLogs,
 	currentSpeciesData,
 	estimatedHpMax,
 	estimatedPeMax,
@@ -84,7 +81,6 @@ const {
 	rollSpellCast,
 	rollSpellEffect,
 	rollCustomDice,
-	clearLogs,
 	addWeapon,
 	removeWeapon,
 	addArmor,
@@ -107,6 +103,8 @@ const {
 	deleteMetadata,
 	saveCharacter,
 	focusAndSelectToken,
+	dodgePenaltyChar,
+	protectionPenaltyChar,
 } = useOwlbear();
 
 const statLabels: Record<StatName, string> = {
@@ -225,18 +223,6 @@ onMounted(() => {
 					>{{ chatMessages.length }}</span
 				>
 			</button>
-			<!-- <button
-				class="tab-btn"
-				:class="{ active: activeTab === 'logs' }"
-				@click="activeTab = 'logs'"
-			>
-				<ClipboardList :size="16" /> Logs
-				<span
-					v-if="rollLogs.length > 0"
-					class="tab-badge"
-					>{{ rollLogs.length }}</span
-				>
-			</button> -->
 			<button
 				v-if="isGM"
 				@click="activeTab = 'gm-dashboard'"
@@ -1919,17 +1905,6 @@ onMounted(() => {
 			</div>
 		</div>
 
-		<!-- ONGLET 3 : LOGS -->
-		<div
-			v-else-if="activeTab === 'logs'"
-			class="sheet-card"
-		>
-			<DiceLogOverlay
-				:logs="rollLogs"
-				@clear="clearLogs"
-			/>
-		</div>
-
 		<!-- ONGLET 4 : CHAT -->
 		<div
 			v-else-if="activeTab === 'chat'"
@@ -2094,29 +2069,33 @@ onMounted(() => {
 			class="sheet-card"
 		>
 			<div class="gm-dashboard-container">
+				<!-- SECTION 1 : LA COMPAGNIE (JOUEURS) -->
 				<div class="chat-header">
-					<h3>État de la Compagnie ({{ partySheets.filter((c) => c.ownerIds.length > 0).length }} personnages)</h3>
+					<h3>La Compagnie ({{ partySheets.filter((c) => c.ownerIds.length > 0).length }} personnages)</h3>
 				</div>
+
 				<div class="gm-global-infos">
 					<p>
 						Pv Global :
 						{{ partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.hpCurrent || 0), 0) }}
 						/
-						{{ partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.hpMax || 0), 0) }} ({{
-							Math.round(
+						{{ partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.hpMax || 0), 0) }}
+						({{
+							(
 								(partySheets
 									.filter((c) => c.ownerIds.length > 0)
 									.reduce((acc, char) => acc + (char.hpCurrent || 0), 0) /
 									partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.hpMax || 0), 0)) *
-									100,
-							)
+								100
+							).toFixed(0)
 						}}%)
 					</p>
 					<p>
 						Pe Global :
 						{{ partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.peCurrent || 0), 0) }}
 						/
-						{{ partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.peMax || 0), 0) }} ({{
+						{{ partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.peMax || 0), 0) }}
+						({{
 							Math.round(
 								(partySheets
 									.filter((c) => c.ownerIds.length > 0)
@@ -2126,6 +2105,74 @@ onMounted(() => {
 							)
 						}}%)
 					</p>
+					<div></div>
+					<p>
+						Blessures :
+						{{
+							partySheets
+								.filter((c) => c.ownerIds.length > 0)
+								.reduce((acc, char) => acc + (char.wounds?.filter((w: boolean) => w).length || 0), 0)
+						}}
+						/
+						{{ partySheets.filter((c) => c.ownerIds.length > 0).length * 6 }}
+						({{
+							Math.round(
+								(partySheets
+									.filter((c) => c.ownerIds.length > 0)
+									.reduce((acc, char) => acc + (char.wounds?.filter((w: boolean) => w).length || 0), 0) /
+									(partySheets.filter((c) => c.ownerIds.length > 0).length * 6)) *
+									100,
+							)
+						}}%)
+					</p>
+					<p>
+						Moyenne :
+						{{
+							partySheets
+								.filter((c) => c.ownerIds.length > 0)
+								.reduce((acc, char) => acc + (char.wounds?.filter((w: boolean) => w).length || 0), 0)
+						}}
+						/ 6
+					</p>
+					<p>
+						Mourants / KO :
+						<span
+							:class="{
+								'text-danger': partySheets.filter((c) => c.ownerIds.length > 0 && (c.hpCurrent || 0) <= 0).length > 0,
+							}"
+						>
+							{{ partySheets.filter((c) => c.ownerIds.length > 0 && (c.hpCurrent || 0) <= 0).length }}
+						</span>
+					</p>
+					<p>
+						Corruption :
+						{{
+							partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.corruption || 0), 0)
+						}}
+						/
+						{{ partySheets.filter((c) => c.ownerIds.length > 0).length * 20 }}
+						({{
+							Math.round(
+								(partySheets
+									.filter((c) => c.ownerIds.length > 0)
+									.reduce((acc, char) => acc + (char.corruption || 0), 0) /
+									partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc) => acc + 20, 0)) *
+									100,
+							)
+						}}%)
+					</p>
+					<p>
+						Moyenne :
+						{{
+							partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.corruption || 0), 0) /
+							partySheets.filter((c) => c.ownerIds.length > 0).length
+						}}
+						/ 20
+					</p>
+					<p>
+						Sombre :
+						{{ partySheets.filter((c) => c.ownerIds.length > 0 && c.corruption >= 16).length }}
+					</p>
 				</div>
 
 				<div class="party-grid">
@@ -2133,27 +2180,29 @@ onMounted(() => {
 						v-for="char in partySheets.filter((c) => c.ownerIds.length > 0)"
 						:key="char.id"
 						class="party-card"
+						:class="{
+							'party-char-dying': char.hpCurrent <= 0,
+							'party-char-dead': char.hpCurrent <= 0 && char.wounds.every((v: boolean) => v === true),
+						}"
 					>
 						<div class="party-card-header">
-							<div style="display: flex; gap: 8px">
-								<span class="party-char-name">{{ char.name || 'Inconnu' }}</span>
-								<button
-									@click="
-										async () => {
-											await focusAndSelectToken(char.id);
-											activeTab = 'sheet';
-											activeSubTab = 'favorites';
-										}
-									"
-									class="btn-add"
-								>
-									<Eye :size="12" />
-								</button>
-							</div>
+							<span class="party-char-name">{{ char.name || 'Inconnu' }}</span>
+							<button
+								@click="
+									async () => {
+										await focusAndSelectToken(char.id);
+										activeTab = 'sheet';
+										activeSubTab = 'favorites';
+									}
+								"
+								class="btn-add"
+								title="Sélectionner le token et ouvrir la fiche"
+							>
+								<Eye :size="12" /> Voir
+							</button>
 						</div>
 
 						<div class="party-card-stats">
-							<!-- Gestion rapide des PV -->
 							<div class="stat-row">
 								<span
 									>PV : <strong>{{ char.hpCurrent || 0 }} / {{ char.hpMax || 0 }}</strong> ({{
@@ -2165,22 +2214,44 @@ onMounted(() => {
 								<span
 									>PE : <strong>{{ char.peCurrent || 0 }} / {{ char.peMax || 0 }}</strong></span
 								>
+								<span>Corruption : {{ char.corruption }}</span>
+							</div>
+							<div class="stat-row gm-extra-info">
+								<span
+									>Prot:
+									{{
+										char.armors
+											?.filter((a: any) => a.protection > 0 && a.equipped)
+											.reduce((sum: any, a: any) => sum + a.protection, 0) || 0
+									}}</span
+								>
+								<span>Blessures: {{ char.wounds?.filter((w: boolean) => w).length || 0 }}/6</span>
+							</div>
+							<div class="stat-row gm-extra-info">
+								<span>Esquive: {{ Math.abs(dodgePenaltyChar(char)) || 0 }}</span>
+								<span>Malus Dex: {{ protectionPenaltyChar(char).dexterity || 0 }}</span>
 							</div>
 						</div>
 					</div>
 				</div>
-				<div class="chat-header">
-					<h3>Autres fiches</h3>
+
+				<!-- SECTION 2 : GESTION DE MASSE (PNJ / MONSTRES EN COMBAT) -->
+				<div
+					class="chat-header"
+					style="margin-top: 20px"
+				>
+					<h3>Gestion des Monstres & PNJ ({{ partySheets.filter((c) => c.ownerIds.length === 0).length }})</h3>
 				</div>
+
 				<div class="party-grid">
 					<div
 						v-for="char in partySheets.filter((c) => c.ownerIds.length === 0)"
 						:key="char.id"
-						class="party-card"
+						class="party-card monster-card"
 					>
 						<div class="party-card-header">
-							<div style="display: flex; gap: 8px">
-								<span class="party-char-name">{{ char.name || 'Inconnu' }}</span>
+							<span class="party-char-name monster-title">{{ char.name || 'Monstre' }}</span>
+							<div style="display: flex; gap: 4px">
 								<button
 									@click="
 										async () => {
@@ -2190,23 +2261,25 @@ onMounted(() => {
 										}
 									"
 									class="btn-add"
+									title="Cibler sur la carte"
 								>
 									<Eye :size="12" />
 								</button>
+								<button
+									@click="deleteMetadata(char)"
+									class="btn-add btn-damage"
+									title="Supprimer la fiche"
+								>
+									<Trash :size="12" />
+								</button>
 							</div>
-							<button
-								@click="deleteMetadata(char)"
-								class="btn-add btn-damage"
-							>
-								<Trash :size="12" />
-							</button>
 						</div>
 
 						<div class="party-card-stats">
-							<!-- Gestion rapide des PV -->
-							<div class="stat-row">
-								<span
-									>PV :
+							<!-- Modification rapide PV combat -->
+							<div class="stat-row combat-row">
+								<div class="combat-inputs">
+									<span>PV :</span>
 									<input
 										type="number"
 										v-model.number="char.hpCurrent"
@@ -2220,8 +2293,8 @@ onMounted(() => {
 										@change="saveCharacter(char)"
 										class="num-input"
 									/>
-									({{ Math.round(((char.hpCurrent || 0) / (char.hpMax || 1)) * 100) }}%)</span
-								>
+									({{ Math.round((char.hpCurrent / char.hpMax) * 100) }}%)
+								</div>
 								<div class="hp-quick-buttons">
 									<button
 										@click="
@@ -2243,9 +2316,11 @@ onMounted(() => {
 									</button>
 								</div>
 							</div>
-							<div class="stat-row">
-								<span
-									>PE :
+
+							<!-- Modification rapide PE combat -->
+							<div class="stat-row combat-row">
+								<div class="combat-inputs">
+									<span>PE :</span>
 									<input
 										type="number"
 										v-model.number="char.peCurrent"
@@ -2259,8 +2334,8 @@ onMounted(() => {
 										@change="saveCharacter(char)"
 										class="num-input"
 									/>
-									({{ Math.round(((char.peCurrent || 0) / (char.peMax || 1)) * 100) }}%)</span
-								>
+									({{ Math.round((char.peCurrent / char.peMax) * 100) }}%)
+								</div>
 								<div class="hp-quick-buttons">
 									<button
 										@click="
@@ -2279,6 +2354,42 @@ onMounted(() => {
 										class="btn-hp-mod"
 									>
 										+1
+									</button>
+								</div>
+							</div>
+							<div class="stat-row gm-extra-info">
+								<span
+									>Prot:
+									{{
+										char.armors
+											?.filter((a: any) => a.protection > 0 && a.equipped)
+											.reduce((sum: any, a: any) => sum + a.protection, 0) || 0
+									}}</span
+								>
+							</div>
+							<div class="stat-row gm-extra-info">
+								<span>Esquive: {{ Math.abs(dodgePenaltyChar(char)) || 0 }}</span>
+								<span>Malus Dex: {{ protectionPenaltyChar(char).dexterity || 0 }}</span>
+							</div>
+							<div
+								class="stat-row combat-row"
+								style="margin-top: 6px; border-top: 1px dashed whitesmoke; padding-top: 4px"
+							>
+								<span>Actions rapides :</span>
+								<div>
+									<button
+										@click="rollCustomDice(6, 'normal', 0, `Jet rapide MJ (${char.name})`, true, 1)"
+										class="btn-hp-mod btn-secret-roll"
+										title="Lancer un d6 secret"
+									>
+										d6
+									</button>
+									<button
+										@click="rollCustomDice(20, 'normal', 0, `Jet rapide MJ (${char.name})`, true, 1)"
+										class="btn-hp-mod btn-secret-roll"
+										title="Lancer un d20 secret"
+									>
+										d20
 									</button>
 								</div>
 							</div>
@@ -3474,18 +3585,20 @@ onMounted(() => {
 	font-size: 0.9rem;
 	font-weight: bold;
 	cursor: pointer;
-	transition: background 0.1s ease;
+	transition: all 0.1s ease;
 }
 .btn-dice:hover {
+	transform: translateY(-2px);
 	background: #4b5563;
 	border-color: #60a5fa;
 }
 .btn-dice-main {
-	background: #2563eb;
+	background: linear-gradient(135deg, #2563eb, #3730a3);
 	border-color: #3b82f6;
 }
 .btn-dice-main:hover {
 	background: #1d4ed8;
+	transform: translateY(-2px);
 }
 .roller-container {
 	display: flex;
@@ -3522,7 +3635,7 @@ onMounted(() => {
 /* Control segmenté pour Normal / Avantage / Désavantage */
 .radio-segmented-control {
 	display: flex;
-	background: #18181b;
+	background: #374151;
 	border-radius: 8px;
 	padding: 3px;
 	border: 1px solid #27272a;
@@ -3544,17 +3657,17 @@ onMounted(() => {
 }
 
 .segmented-btn.active {
-	background: #3f3f46;
+	background: linear-gradient(135deg, #2563eb, #3730a3);
 	color: #fff;
 	font-weight: bold;
 }
 
 .segmented-btn.mode-adv.active {
-	background: #15803d;
+	background: linear-gradient(135deg, #10b981, #15803d);
 }
 
 .segmented-btn.mode-dis.active {
-	background: #b91c1c;
+	background: linear-gradient(135deg, #b91c1c80, #7f1d1d);
 }
 
 /* Modificateur avec boutons rapides */
@@ -3576,7 +3689,7 @@ onMounted(() => {
 }
 
 .btn-quick-bonus {
-	background: #27272a;
+	background: #374151;
 	border: 1px solid #3f3f46;
 	color: #e4e4e7;
 	border-radius: 4px;
@@ -3596,29 +3709,6 @@ onMounted(() => {
 	gap: 8px;
 }
 
-.btn-dice {
-	background: linear-gradient(135deg, #27272a, #18181b);
-	border: 1px solid #3f3f46;
-	border-radius: 8px;
-	padding: 12px 6px;
-	color: #fff;
-	font-weight: bold;
-	cursor: pointer;
-	transition:
-		transform 0.1s ease,
-		border-color 0.2s ease;
-}
-
-.btn-dice:hover {
-	transform: translateY(-2px);
-	border-color: #a1a1aa;
-}
-
-.btn-dice-main {
-	background: linear-gradient(135deg, #4f46e5, #3730a3);
-	border-color: #6366f1;
-}
-
 .roller-divider {
 	border: none;
 	border-top: 1px solid #27272a;
@@ -3629,7 +3719,7 @@ onMounted(() => {
 .dice-count-selector {
 	display: flex;
 	align-items: center;
-	background: #18181b;
+	background: #37415180;
 	border: 1px solid #27272a;
 	border-radius: 8px;
 	overflow: hidden;
@@ -3637,7 +3727,7 @@ onMounted(() => {
 }
 
 .btn-count {
-	background: #27272a;
+	background: #374151;
 	border: none;
 	color: #e4e4e7;
 	padding: 8px 12px;
@@ -3687,7 +3777,7 @@ onMounted(() => {
 }
 
 .btn-formula-submit {
-	background: linear-gradient(135deg, #4f46e5, #3730a3);
+	background: linear-gradient(135deg, #2563eb, #3730a3);
 	border: 1px solid #6366f1;
 	color: #fff;
 	font-weight: bold;
@@ -4042,48 +4132,6 @@ input[type='number'] {
 	color: #f3f4f6;
 }
 
-.logs-container {
-	display: flex;
-	flex-direction: column;
-	gap: 10px;
-}
-.logs-header {
-	display: flex;
-	justify-content: space-between;
-	align-items: center;
-	border-bottom: 1px solid #374151;
-	padding-bottom: 8px;
-}
-.logs-header h3 {
-	font-size: 0.9rem;
-	margin: 0;
-	color: #f3f4f6;
-}
-.btn-clear {
-	background: #374151;
-	color: #d1d5db;
-	border: none;
-	border-radius: 4px;
-	padding: 3px 8px;
-	font-size: 0.75rem;
-	cursor: pointer;
-}
-.btn-clear:hover {
-	background: #4b5563;
-}
-.logs-list {
-	display: flex;
-	flex-direction: column;
-	gap: 8px;
-}
-.no-logs {
-	font-size: 0.8rem;
-	color: #6b7280;
-	text-align: center;
-	padding: 20px 0;
-	font-style: italic;
-}
-
 .log-card {
 	background: #111827;
 	border-radius: 6px;
@@ -4206,14 +4254,17 @@ input[type='number'] {
 	font-size: 0.75rem;
 	color: #9ca3af;
 	margin: 0;
+	padding-bottom: 4px;
+	border-bottom: 1px dashed #9ca3af;
 }
 
 .gm-global-infos {
 	display: grid;
-	grid-template-columns: 1fr 1fr;
+	grid-template-columns: 1fr 1fr 1fr;
 	justify-content: space-between;
 	align-items: center;
 	gap: 12px;
+	margin-bottom: 32px;
 }
 
 .party-grid {
@@ -4225,13 +4276,19 @@ input[type='number'] {
 }
 
 .party-card {
-	background: #18181b;
+	background: #374151;
 	border: 1px solid #27272a;
 	border-radius: 8px;
 	padding: 10px;
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
+}
+.party-char-dying {
+	background: #7f1d1d60;
+}
+.party-char-dead {
+	text-decoration: line-through !important;
 }
 
 .party-card-header {
@@ -4272,7 +4329,7 @@ input[type='number'] {
 }
 
 .btn-hp-mod {
-	background: #27272a;
+	background: #2d3748;
 	border: 1px solid #3f3f46;
 	color: #fff;
 	padding: 2px 6px;
@@ -4285,8 +4342,28 @@ input[type='number'] {
 	background: #3f3f46;
 }
 
-.btn-gm-tab {
-	background: linear-gradient(135deg, #7c3aed, #4c1d95) !important;
-	border-color: #8b5cf6 !important;
+/* Style spécifique pour la section gestion de masse des monstres */
+.monster-card {
+	background: #374151;
+}
+
+.combat-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	font-size: 0.8rem;
+	margin-top: 4px;
+}
+
+.combat-inputs {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+}
+
+.combat-inputs .num-input {
+	width: 34px;
+	font-size: 0.75rem;
+	padding: 1px;
 }
 </style>
