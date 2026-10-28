@@ -172,6 +172,7 @@ export interface CharacterStats {
 
 export interface CharacterSheet {
 	id: string;
+	type: 'pj' | 'monster';
 	name: string;
 	species: string;
 	professionName?: string; // NOUVEAU : Nom de l'ancien métier
@@ -191,6 +192,7 @@ export interface CharacterSheet {
 	armors: ArmorItem[];
 	feats: FeatItem[];
 	inventory: InventoryItem[];
+	subTabOrder: any;
 }
 
 export interface RoomPlayer {

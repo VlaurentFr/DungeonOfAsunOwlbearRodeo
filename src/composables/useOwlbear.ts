@@ -12,7 +12,6 @@ import {
 	SPECIES_DATA,
 } from '../types/character';
 
-const METADATA_KEY = 'com.homebrew.sheet/characterData';
 const BROADCAST_CHAT_CHANNEL = 'com.homebrew.sheet/chat_messages';
 
 // Définis le type d'un message de chat
@@ -44,13 +43,58 @@ export function useOwlbear() {
 	const currentUserName = ref<string>('Joueur');
 	const currentUserColor = ref<string>('#3b82f6');
 	const userRole = ref<'GM' | 'PLAYER'>('PLAYER');
-	const selectedTokenId = ref<string | null>(null);
-	const roomPlayers = ref<RoomPlayer[]>([]);
+	// Liste réactive globale pour stocker tous les joueurs connus de la partie
+	const knownPlayers = ref<{ id: string; name: string; color: string }[]>([]);
+
+	async function initRoomPlayersObserver() {
+		// 1. Récupérer les joueurs actuellement connectés
+		const players = await OBR.party.getPlayers();
+
+		// 2. Mettre à jour les métadonnées de la Room avec ces joueurs
+		const roomMetadata = await OBR.room.getMetadata();
+
+		let savedPlayers = (roomMetadata['room_known_players'] as { id: string; name: string; color: string }[]) || [];
+
+		// On fusionne pour ajouter les nouveaux joueurs qu'on ne connaît pas encore
+		let updated = false;
+		for (const p of players) {
+			if (!savedPlayers.some((sp) => sp.id === p.id)) {
+				savedPlayers.push({ id: p.id, name: p.name, color: p.color });
+				updated = true;
+			}
+		}
+
+		if (updated) {
+			await OBR.room.setMetadata({ room_known_players: savedPlayers });
+		}
+
+		knownPlayers.value = savedPlayers;
+
+		// 3. Écouter les changements en temps réel (si un joueur se connecte en cours de partie)
+		OBR.party.onChange(async (currentPlayers) => {
+			const currentMeta = await OBR.room.getMetadata();
+			let currentSaved = (currentMeta['room_known_players'] as { id: string; name: string; color: string }[]) || [];
+			let changeDetected = false;
+
+			for (const p of currentPlayers) {
+				if (!currentSaved.some((sp) => sp.id === p.id)) {
+					currentSaved.push({ id: p.id, name: p.name, color: p.color });
+					changeDetected = true;
+				}
+			}
+
+			if (changeDetected) {
+				await OBR.room.setMetadata({ room_known_players: currentSaved });
+				knownPlayers.value = currentSaved;
+			}
+		});
+	}
 
 	const chatMessages = ref<ChatMessage[]>([]);
 
 	const sheet = ref<CharacterSheet>({
 		id: '',
+		type: 'monster',
 		name: 'Aucun',
 		species: 'Aucune',
 		ownerIds: [],
@@ -135,7 +179,31 @@ export function useOwlbear() {
 		return { level: 'Pur', class: 'status-pur', effect: 'Aucun effet' };
 	});
 
+	// ID du token actuellement sélectionné dans la liste déroulante de l'extension
+	const currentSheetTokenId = ref<string | null>(null);
+
+	// Liste filtrée des tokens disponibles
+	const availableTokens = computed(() => {
+		if (isGM.value) {
+			return partySheets.value; // Le MJ voit toutes les fiches de la scène
+		}
+
+		// Pour un joueur classique : on garde uniquement les fiches où son ID figure dans 'ownerIds'
+		return partySheets.value.filter((char) => char.ownerIds && char.ownerIds.includes(currentUserId.value));
+	});
+
+	async function changeActiveToken(tokenId: string | null) {
+		currentSheetTokenId.value = tokenId;
+		await loadSelection();
+		// Optionnel : si tu veux aussi synchroniser avec la sélection sur la carte d'Owlbear Rodeo
+		// await OBR.scene.items.select([tokenId]);
+	}
+
+	let scrollChat = () => {};
+
 	async function init(scrollToBottom: () => Promise<void>) {
+		scrollChat = scrollToBottom;
+
 		OBR.onReady(async () => {
 			currentUserId.value = await OBR.player.getId();
 			currentUserName.value = await OBR.player.getName();
@@ -154,51 +222,100 @@ export function useOwlbear() {
 				}
 
 				if (!msg.isWhisper || isGM.value || msg.senderId === currentUserId.value) {
-					await scrollToBottom(); // <-- On déclenche le scroll ici pour les autres
+					await scrollChat(); // <-- On déclenche le scroll ici pour les autres
 				}
 			});
 
-			OBR.party.onChange((players) => {
-				roomPlayers.value = players.map((p) => ({
-					id: p.id,
-					name: p.name,
-					color: p.color,
-					role: p.role,
-				}));
-				const me = players.find((p) => p.id === currentUserId.value);
-				if (me) {
-					currentUserName.value = me.name;
-					currentUserColor.value = me.color;
-				}
-			});
-
-			OBR.player.onChange(async () => {
-				await loadSelection();
-			});
+			initRoomPlayersObserver();
 
 			initPartyOverview();
 
 			// Écoute les changements globaux de la room pour synchroniser en direct
 			OBR.room.onMetadataChange(async (metadata) => {
-				await loadSelection();
-				updatePartyListFromMetadata(metadata);
-			});
-
-			const initialPlayers = await OBR.party.getPlayers();
-			roomPlayers.value = initialPlayers.map((p) => ({
-				id: p.id,
-				name: p.name,
-				color: p.color,
-				role: p.role,
-			}));
-
-			OBR.player.onChange(async () => {
+				await updatePartyListFromMetadata(metadata);
 				await loadSelection();
 			});
 
 			await loadSelection();
 			isReady.value = true;
 		});
+	}
+
+	// Fonction d'initialisation adaptée avec choix du type
+	async function initializeTokenSheet(tokenId: string, sheetType: 'pj' | 'monster') {
+		const items = await OBR.scene.items.getItems([tokenId]);
+		const item = items[0];
+		if (!item) return;
+
+		const baseName = (item.name || (sheetType === 'pj' ? 'Nouveau Joueur' : 'Monstre')).trim();
+		const cleanName = baseName.toLowerCase().replace(/\s+/g, '_');
+
+		const roomMetadata = await OBR.room.getMetadata();
+		let roomMetadataKey = '';
+		let finalName = baseName;
+
+		if (sheetType === 'pj') {
+			// Clé basée sur le NOM du joueur (persistance inter-scènes)
+			roomMetadataKey = `character_sheet_${cleanName}`;
+			if (roomMetadata[roomMetadataKey]) {
+				console.warn('Une fiche de Joueur existe déjà avec ce nom.');
+			}
+		} else {
+			// Clé basée sur le TOKEN ID du monstre (indépendance totale des PV)
+			roomMetadataKey = `character_sheet_monster_${tokenId}`;
+
+			// Compteur cosmétique pour le nom sur la carte (ex: Gobelin 1, Gobelin 2)
+			let counter = 1;
+			const existingMonsterKeys = Object.keys(roomMetadata).filter((k) => k.startsWith('character_sheet_monster_'));
+			const sameNameCount = existingMonsterKeys.filter((k) => {
+				const data = roomMetadata[k] as any;
+				return data && data.name && data.name.startsWith(baseName);
+			}).length;
+
+			if (sameNameCount > 0) {
+				counter = sameNameCount + 1;
+				finalName = `${baseName} ${counter}`;
+				// On met à jour le nom du pion sur la carte OBR
+				await OBR.scene.items.updateItems([tokenId], (itemsToUpdate) => {
+					for (const it of itemsToUpdate) {
+						it.name = finalName;
+					}
+				});
+			}
+		}
+
+		// Fiche par défaut
+		const defaultSheet: CharacterSheet = {
+			id: tokenId,
+			type: sheetType,
+			name: finalName,
+			species: 'Aucune',
+			professionName: '',
+			professionDescription: '',
+			ownerIds: [],
+			stats: { force: 10, dexterite: 10, intellect: 10, sagesse: 10 },
+			weaponXp: { ...DEFAULT_WEAPON_XP },
+			hpCurrent: sheetType === 'pj' ? 30 : 20,
+			hpMax: sheetType === 'pj' ? 30 : 20,
+			peCurrent: sheetType === 'pj' ? 40 : 10,
+			peMax: sheetType === 'pj' ? 40 : 10,
+			wounds: [false, false, false, false, false, false],
+			corruption: 0,
+			ec: 0,
+			spells: [],
+			weapons: [],
+			armors: [],
+			feats: [],
+			inventory: [],
+		};
+
+		// Enregistrement dans la Room
+		await OBR.room.setMetadata({
+			[roomMetadataKey]: defaultSheet,
+		});
+
+		currentSheetTokenId.value = tokenId;
+		await loadSelection();
 	}
 
 	async function sendChatMessage(
@@ -231,6 +348,7 @@ export function useOwlbear() {
 		// Affichage local immédiat pour l'expéditeur
 		if (!isWhisper || isGM.value || message.senderId === currentUserId.value) {
 			chatMessages.value.push(message);
+			await scrollChat();
 		}
 
 		// Envoi aux autres joueurs connectés
@@ -242,95 +360,41 @@ export function useOwlbear() {
 		await sendChatMessage(rollEntry.label, rollEntry.isSecret, true, rollEntry);
 	}
 
+	const isLoadingSheet = ref(true);
 	async function loadSelection() {
-		const selection = await OBR.player.getSelection();
-
-		if (selection && selection.length === 1) {
-			const tokenId = selection[0];
-			const items = await OBR.scene.items.getItems(selection);
-			const item = items[0];
-
-			if (!item) {
-				selectedTokenId.value = null;
-				return;
-			}
-
-			const isCharacterToken = item.layer === 'CHARACTER' || item.layer === 'MOUNT';
-
-			if (!isCharacterToken) {
-				selectedTokenId.value = null;
-				return;
-			}
-
-			selectedTokenId.value = tokenId;
-
-			// Détermination de la clé basée sur le nom du pion sur la carte
-			const tokenName = (item.name || 'Nouveau Personnage').trim().toLowerCase();
-			const roomMetadataKey = `character_sheet_${tokenName}`;
-
-			// Récupération des métadonnées globales de la Room
-			const roomMetadata = await OBR.room.getMetadata();
-			const savedData = (roomMetadata[roomMetadataKey] ||
-				(item.metadata ? item.metadata[METADATA_KEY] : null)) as Partial<CharacterSheet> | null;
-
-			if (savedData) {
-				sheet.value = {
-					id: tokenId,
-					name: savedData.name || item.name || 'Nouveau Personnage',
-					species: savedData.species || 'Aucune',
-					professionName: savedData.professionName || '',
-					professionDescription: savedData.professionDescription || '',
-					ownerIds: savedData.ownerIds ? [...savedData.ownerIds] : [],
-					stats: {
-						force: savedData.stats?.force ?? 10,
-						dexterite: savedData.stats?.dexterite ?? 10,
-						intellect: savedData.stats?.intellect ?? 10,
-						sagesse: savedData.stats?.sagesse ?? 10,
-					},
-					weaponXp: { ...DEFAULT_WEAPON_XP, ...(savedData.weaponXp || {}) },
-					hpCurrent: savedData.hpCurrent ?? 30,
-					hpMax: savedData.hpMax ?? 30,
-					peCurrent: savedData.peCurrent ?? 40,
-					peMax: savedData.peMax ?? 40,
-					wounds:
-						savedData.wounds && savedData.wounds.length === 6
-							? savedData.wounds
-							: [false, false, false, false, false, false],
-					corruption: savedData.corruption ?? 0,
-					ec: savedData.ec ?? 0,
-					spells: savedData.spells || [],
-					weapons: savedData.weapons || [],
-					armors: savedData.armors || [],
-					feats: savedData.feats || [],
-					inventory: savedData.inventory || [],
-				};
-			} else {
-				sheet.value = {
-					id: tokenId,
-					name: item.name || 'Nouveau Personnage',
-					species: 'Aucune',
-					professionName: '',
-					professionDescription: '',
-					ownerIds: [],
-					stats: { force: 10, dexterite: 10, intellect: 10, sagesse: 10 },
-					weaponXp: { ...DEFAULT_WEAPON_XP },
-					hpCurrent: 30,
-					hpMax: 30,
-					peCurrent: 40,
-					peMax: 40,
-					wounds: [false, false, false, false, false, false],
-					corruption: 0,
-					ec: 0,
-					spells: [],
-					weapons: [],
-					armors: [],
-					feats: [],
-					inventory: [],
-				};
-			}
-		} else {
-			selectedTokenId.value = null;
+		const tokenId = currentSheetTokenId.value;
+		if (!tokenId) {
+			return;
 		}
+		if (!sheet.value) {
+			isLoadingSheet.value = true;
+		}
+
+		const roomMetadata = await OBR.room.getMetadata();
+
+		// 1. Recherche par clé Monstre (ID unique)
+		let savedData = roomMetadata[`character_sheet_monster_${tokenId}`] as Partial<CharacterSheet> | null;
+
+		// 2. Si non trouvé, recherche par clé PJ (Nom)
+		if (!savedData) {
+			const char = availableTokens.value.find((char: CharacterSheet) => char.id === tokenId);
+
+			const tokenName = (char.name || '').trim();
+			const cleanName = tokenName.toLowerCase();
+
+			savedData = roomMetadata[`character_sheet_${cleanName}`] as Partial<CharacterSheet> | null;
+		}
+
+		if (savedData) {
+			sheet.value = JSON.parse(
+				JSON.stringify({
+					...savedData,
+					id: tokenId, // Mise à jour de l'ID courant
+				}),
+			);
+		}
+
+		isLoadingSheet.value = false;
 	}
 
 	async function saveSheet() {
@@ -339,23 +403,16 @@ export function useOwlbear() {
 
 		// Utilisation du nom du personnage pour créer une clé globale stable
 		const charName = (sheet.value.name || 'personnage').trim().toLowerCase();
-		const roomMetadataKey = `character_sheet_${charName}`;
+		let roomMetadataKey = `character_sheet_${charName}`;
+		if (sheet.value.type === 'monster') {
+			roomMetadataKey = `character_sheet_monster_${sheet.value.id}`;
+		}
 
 		try {
 			// 1. Sauvegarde globale dans la Room (partagée entre toutes les scènes et tous les tokens du même nom)
 			await OBR.room.setMetadata({
 				[roomMetadataKey]: rawData,
 			});
-
-			// 2. Optionnel : On garde aussi une copie sur le token sélectionné s'il existe
-			if (selectedTokenId.value) {
-				await OBR.scene.items.updateItems([selectedTokenId.value], (items) => {
-					for (const item of items) {
-						if (!item.metadata) item.metadata = {};
-						item.metadata[METADATA_KEY] = rawData;
-					}
-				});
-			}
 		} catch (e) {
 			console.error('Erreur lors de la sauvegarde de la fiche:', e);
 		}
@@ -391,34 +448,34 @@ export function useOwlbear() {
 		await broadcastDiceRollAsChat(logEntry);
 
 		// Détermination de l'icône de succès / échec pour la notification
-		let statusIcon = '';
-		if (logEntry.isSuccess === true) {
-			statusIcon = '✅ ';
-		} else if (logEntry.isSuccess === false) {
-			statusIcon = '❌ ';
-		}
-		// Détermination de critique
-		let critStatus = '';
-		if (logEntry.isCritSuccess === true) {
-			critStatus = ' [CRITIQUE] ';
-		} else if (logEntry.isCritFailure === true) {
-			critStatus = ' [ÉCHEC CRITIQUE] ';
-		}
+		// let statusIcon = '';
+		// if (logEntry.isSuccess === true) {
+		// 	statusIcon = '✅ ';
+		// } else if (logEntry.isSuccess === false) {
+		// 	statusIcon = '❌ ';
+		// }
+		// // Détermination de critique
+		// let critStatus = '';
+		// if (logEntry.isCritSuccess === true) {
+		// 	critStatus = ' [CRITIQUE] ';
+		// } else if (logEntry.isCritFailure === true) {
+		// 	critStatus = ' [ÉCHEC CRITIQUE] ';
+		// }
 
 		// Construction du texte de la notification
-		let notifText = `${statusIcon}${critStatus} ${logEntry.playerName} : ${logEntry.label}`;
-		if (logEntry.diceResult !== undefined) notifText += ` (Dé : ${logEntry.diceResult})`;
+		// let notifText = `${statusIcon}${critStatus} ${logEntry.playerName} : ${logEntry.label}`;
+		// if (logEntry.diceResult !== undefined) notifText += ` (Dé : ${logEntry.diceResult})`;
 
 		// Notification selon le caractère secret ou public du jet
-		if (!logEntry.isSecret) {
-			OBR.notification.show(notifText);
-		} else if (isGM.value) {
-			// Le MJ voit les lancers secrets de ses joueurs avec une mention explicite
-			OBR.notification.show(`🔒 [SECRET] ${notifText}`);
-		} else {
-			// Pour les joueurs, un jet secret n'affiche pas le détail direct par discrétion
-			OBR.notification.show(`🔒 [SECRET] ${logEntry.playerName} a effectué un jet masqué.`);
-		}
+		// if (!logEntry.isSecret) {
+		// 	OBR.notification.show(notifText);
+		// } else if (isGM.value) {
+		// 	// Le MJ voit les lancers secrets de ses joueurs avec une mention explicite
+		// 	OBR.notification.show(`🔒 [SECRET] ${notifText}`);
+		// } else {
+		// 	// Pour les joueurs, un jet secret n'affiche pas le détail direct par discrétion
+		// 	OBR.notification.show(`🔒 [SECRET] ${logEntry.playerName} a effectué un jet masqué.`);
+		// }
 	}
 
 	// --- LANCER LIBRE (Dés personnalisés) ---
@@ -509,7 +566,7 @@ export function useOwlbear() {
 			characterName: sheet.value.name || currentUserName.value,
 			label: labelName,
 			diceResult: total,
-			details: `Formule: ${formula} (${parsed.breakdown})`,
+			details: `Formule: ${parsed.breakdown}`,
 			isSecret,
 			timestamp: timeStr,
 		};
@@ -598,6 +655,10 @@ export function useOwlbear() {
 		};
 
 		await broadcastLog(logEntry);
+
+		if (isSuccess) {
+			setTimeout(() => rollWeaponDamage(weapon, isSecret), 300);
+		}
 	}
 
 	// --- ARME : DEGATS ---
@@ -612,7 +673,7 @@ export function useOwlbear() {
 		if (rankData.dice !== 'Aucun') {
 			const mRoll = parseAndRollDice(rankData.dice);
 			masteryRollTotal = mRoll.total;
-			masteryRollBreakdown = ` + Maîtrise ${mRoll.breakdown}`;
+			masteryRollBreakdown = ` + Maîtrise : ${mRoll.breakdown}`;
 		}
 
 		const totalDamage = baseDamageRoll.total + masteryRollTotal;
@@ -672,6 +733,10 @@ export function useOwlbear() {
 		};
 
 		await broadcastLog(logEntry);
+
+		if (isSuccess) {
+			setTimeout(() => rollSpellEffect(spell, isSecret), 300);
+		}
 	}
 
 	// --- SORT : EFFET ---
@@ -698,11 +763,11 @@ export function useOwlbear() {
 			if (rankData.dice !== 'Aucun') {
 				const mRoll = parseAndRollDice(rankData.dice);
 				masteryRollTotal = mRoll.total;
-				masteryRollBreakdown = ` + Maîtrise ${mRoll.breakdown}`;
+				masteryRollBreakdown = ` + Maîtrise : ${mRoll.breakdown}`;
 			}
 
 			totalVal = baseRoll.total + masteryRollTotal + weaponRoll.total;
-			detailStr = `${weaponRoll.breakdown} + ${baseRoll.breakdown}${masteryRollBreakdown}`;
+			detailStr = `${baseRoll.breakdown} + Armes : ${weaponRoll.breakdown}${masteryRollBreakdown}`;
 		} else {
 			detailStr = spell.description || 'Effet déclenché.';
 		}
@@ -918,6 +983,64 @@ export function useOwlbear() {
 		}
 	}
 
+	// --- EXPORT ---
+	function exportCharacterSheet() {
+		if (!sheet.value || !sheet.value.name) return;
+
+		// Création d'une copie propre de la fiche courante
+		const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(sheet.value, null, 2));
+
+		// Création d'un lien de téléchargement invisible
+		const downloadAnchor = document.createElement('a');
+		downloadAnchor.setAttribute('href', dataStr);
+
+		// Nom du fichier basé sur le nom du personnage (nettoyé des espaces)
+		const safeName = sheet.value.name.trim().toLowerCase().replace(/\s+/g, '_');
+		downloadAnchor.setAttribute('download', `fiche_${safeName}.json`);
+
+		document.body.appendChild(downloadAnchor);
+		downloadAnchor.click();
+		downloadAnchor.remove();
+	}
+
+	// --- IMPORT ---
+	async function importCharacterSheet(event: Event) {
+		const target = event.target as HTMLInputElement;
+		const file = target.files?.[0];
+		if (!file) return;
+
+		const reader = new FileReader();
+		reader.onload = async (e) => {
+			try {
+				const content = e.target?.result as string;
+				const importedData = JSON.parse(content);
+
+				// Vérification basique de la structure (ex: présence d'un nom et de stats)
+				if (!importedData || !importedData.name || !importedData.stats) {
+					alert('Format de fichier invalide pour une fiche de personnage.');
+					return;
+				}
+
+				// On injecte les données dans la fiche actuelle tout en gardant l'ID du token courant
+				sheet.value = {
+					...importedData,
+					id: sheet.value.id, // Conserve l'ID du token actif sur la scène
+				};
+
+				// Sauvegarde automatique dans les métadonnées de la Room pour propager le changement
+				await saveSheet();
+				alert(`Fiche de "${sheet.value.name}" importée avec succès !`);
+			} catch (err) {
+				console.error('Erreur lors de la lecture du JSON :', err);
+				alert('Erreur lors de la lecture du fichier JSON.');
+			} finally {
+				// Réinitialise l'input file pour permettre de réimporter le même fichier si besoin
+				target.value = '';
+			}
+		};
+		reader.readAsText(file);
+	}
+
 	// Liste de toutes les fiches des personnages présents dans la salle
 	const partySheets = ref<any[]>([]);
 
@@ -944,7 +1067,10 @@ export function useOwlbear() {
 
 		// Utilisation du nom du personnage pour créer une clé globale stable
 		const charName = (character.name || 'personnage').trim().toLowerCase();
-		const roomMetadataKey = `character_sheet_${charName}`;
+		let roomMetadataKey = `character_sheet_${charName}`;
+		if (character.type === 'monster') {
+			roomMetadataKey = `character_sheet_monster_${character.id}`;
+		}
 
 		// 1. Sauvegarde globale dans la Room (partagée entre toutes les scènes et tous les tokens du même nom)
 		await OBR.room.setMetadata({
@@ -954,7 +1080,14 @@ export function useOwlbear() {
 
 	async function deleteMetadata(character: any) {
 		const charName = (character.name || 'personnage').trim().toLowerCase();
-		const roomMetadataKey = `character_sheet_${charName}`;
+
+		let roomMetadataKey = `character_sheet_${charName}`;
+		if (character.type === 'monster') {
+			roomMetadataKey = `character_sheet_monster_${character.id}`;
+		}
+		// const roomMetadataKey = `character_sheet_undead 1_1`;
+		// const roomMetadata = await OBR.room.getMetadata();
+		// console.log('delete', roomMetadata, charName);
 
 		await OBR.room.setMetadata({
 			[roomMetadataKey]: undefined,
@@ -963,38 +1096,27 @@ export function useOwlbear() {
 
 	async function focusAndSelectToken(tokenId: string) {
 		if (!tokenId) return;
-
-		// 1. Récupérer les données de l'item sur la scène
-		const items = await OBR.scene.items.getItems([tokenId]);
-		if (items.length === 0) {
-			console.warn('Token introuvable sur la scène active.');
-			await OBR.player.select([]);
-			return;
-		}
-
-		const token = items[0];
-
-		// 3. Sélectionner le token
-		await OBR.player.select([token.id]);
+		currentSheetTokenId.value = tokenId;
+		await loadSelection();
 	}
 
 	return {
 		isReady,
 		isGM,
 		canEdit,
-		selectedTokenId,
 		sheet,
-		roomPlayers,
+		knownPlayers,
 		currentSpeciesData,
 		estimatedHpMax,
 		estimatedPeMax,
 		dodgePenalty,
 		protectionPenalty,
-		dodgePenaltyChar,
-		protectionPenaltyChar,
 		corruptionStatus,
 		chatMessages,
+		availableTokens,
+		currentSheetTokenId,
 		partySheets,
+		isLoadingSheet,
 		init,
 		saveSheet,
 		rollStatCheck,
@@ -1003,6 +1125,8 @@ export function useOwlbear() {
 		rollSpellCast,
 		rollSpellEffect,
 		rollCustomDice,
+		dodgePenaltyChar,
+		protectionPenaltyChar,
 		executeFormulaRoll,
 		addWeapon,
 		removeWeapon,
@@ -1027,5 +1151,9 @@ export function useOwlbear() {
 		deleteMetadata,
 		saveCharacter,
 		focusAndSelectToken,
+		changeActiveToken,
+		initializeTokenSheet,
+		exportCharacterSheet,
+		importCharacterSheet,
 	};
 }
