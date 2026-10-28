@@ -2,7 +2,6 @@ import { ref, computed, toRaw } from 'vue';
 import OBR from '@owlbear-rodeo/sdk';
 import {
 	type CharacterSheet,
-	type RoomPlayer,
 	type StatName,
 	type WeaponType,
 	type DiceRollLog,

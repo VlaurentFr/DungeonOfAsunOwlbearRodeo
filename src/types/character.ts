@@ -195,13 +195,6 @@ export interface CharacterSheet {
 	subTabOrder: any;
 }
 
-export interface RoomPlayer {
-	id: string;
-	name: string;
-	color: string;
-	role: 'GM' | 'PLAYER';
-}
-
 // --- LOGS ---
 export interface DiceRollLog {
 	id: string;
