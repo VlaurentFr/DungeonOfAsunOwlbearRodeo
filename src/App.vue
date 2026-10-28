@@ -1251,7 +1251,7 @@ onMounted(() => {
 								handle=".drag-handle"
 								@end="onDragEnd"
 							>
-								<template #item="{ element: fav, index }">
+								<template #item="{ element: fav }">
 									<div class="fav-quick-card">
 										<!-- EN-TÊTE COMMUN AVEC BOUTONS DE TRI GLOBAL -->
 										<div class="fav-quick-header">

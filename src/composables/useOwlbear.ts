@@ -112,6 +112,7 @@ export function useOwlbear() {
 		armors: [],
 		feats: [],
 		inventory: [],
+		subTabOrder: [],
 	});
 
 	const isGM = computed(() => userRole.value === 'GM');
@@ -307,6 +308,7 @@ export function useOwlbear() {
 			armors: [],
 			feats: [],
 			inventory: [],
+			subTabOrder: [],
 		};
 
 		// Enregistrement dans la Room
