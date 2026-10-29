@@ -443,6 +443,7 @@ export function useOwlbear() {
 
 	// Applique le debounce de 400ms sur la sauvegarde
 	const saveSheet = debounce(executeSaveSheet, 400);
+
 	function parseAndRollDice(diceNotation: string): { total: number; breakdown: string } {
 		let total = 0;
 		const regex = /(\d*)d(\d+)/gi;
@@ -1086,9 +1087,34 @@ export function useOwlbear() {
 		}
 		partySheets.value = sheets;
 	}
+	function cleanSheetForSaving(sheetData: any) {
+		// Crée une copie propre
+		const clean = JSON.parse(JSON.stringify(sheetData));
+
+		// Nettoie les armes sans description pour alléger
+		clean.weapons = clean.weapons.map((w: any) => {
+			if (!w.description) delete w.description;
+			return w;
+		});
+
+		// Nettoie les sorts
+		clean.spells = clean.spells.map((s: any) => {
+			if (!s.description) delete s.description;
+			return s;
+		});
+
+		// Nettoie l'inventaire
+		clean.inventory = clean.inventory.map((i: any) => {
+			if (!i.description) delete i.description;
+			if (!i.formula) delete i.formula;
+			return i;
+		});
+
+		return clean;
+	}
 
 	async function saveCharacter(character: any) {
-		const rawData = JSON.parse(JSON.stringify(toRaw(character)));
+		const rawData = cleanSheetForSaving(toRaw(sheet.value));
 
 		// Utilisation du nom du personnage pour créer une clé globale stable
 		const charName = (character.name || 'personnage').trim().toLowerCase();
