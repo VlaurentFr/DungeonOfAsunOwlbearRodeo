@@ -376,9 +376,8 @@ export function useOwlbear() {
 	}
 
 	const isLoadingSheet = ref(true);
-	// Drapeau pour éviter que nos propres modifications distantes/locales n'écrasent notre saisie en cours
+	// Drapeau pour éviter que nos propres modifications ne réinitialisent notre saisie
 	let isSavingLocally = false;
-	let lastSavedTimestamp = 0;
 
 	async function loadSelection() {
 		const tokenId = currentSheetTokenId.value;
@@ -405,7 +404,6 @@ export function useOwlbear() {
 		}
 
 		if (savedData) {
-			// Optionnel : Si la donnée distante est plus ancienne ou identique à notre dernier envoi, on évite d'écraser aveuglément
 			sheet.value = JSON.parse(
 				JSON.stringify({
 					...savedData,
@@ -433,7 +431,6 @@ export function useOwlbear() {
 			await OBR.room.setMetadata({
 				[roomMetadataKey]: rawData,
 			});
-			lastSavedTimestamp = Date.now();
 		} catch (e) {
 			console.error('Erreur lors de la sauvegarde de la fiche:', e);
 		} finally {
@@ -444,9 +441,8 @@ export function useOwlbear() {
 		}
 	}
 
-	// On applique un debounce de 400ms sur la fonction de sauvegarde accessible par l'app
+	// Applique le debounce de 400ms sur la sauvegarde
 	const saveSheet = debounce(executeSaveSheet, 400);
-
 	function parseAndRollDice(diceNotation: string): { total: number; breakdown: string } {
 		let total = 0;
 		const regex = /(\d*)d(\d+)/gi;
