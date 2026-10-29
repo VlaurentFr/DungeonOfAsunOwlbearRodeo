@@ -198,6 +198,16 @@ export function useOwlbear() {
 		// Optionnel : si tu veux aussi synchroniser avec la sélection sur la carte d'Owlbear Rodeo
 		// await OBR.scene.items.select([tokenId]);
 	}
+	// Fonction utilitaire de debounce pour éviter les écritures simultanées en rafale
+	function debounce<T extends (...args: any[]) => any>(fn: T, delay: number): (...args: Parameters<T>) => void {
+		let timeoutId: ReturnType<typeof setTimeout> | null = null;
+		return (...args: Parameters<T>) => {
+			if (timeoutId) clearTimeout(timeoutId);
+			timeoutId = setTimeout(() => {
+				fn(...args);
+			}, delay);
+		};
+	}
 
 	let scrollChat = () => {};
 
@@ -232,8 +242,12 @@ export function useOwlbear() {
 
 			// Écoute les changements globaux de la room pour synchroniser en direct
 			OBR.room.onMetadataChange(async (metadata) => {
-				await updatePartyListFromMetadata(metadata);
-				await loadSelection();
+				updatePartyListFromMetadata(metadata);
+
+				// Si le joueur est en train de modifier/sauvegarder activement, on ignore le refresh distant immédiat
+				if (!isSavingLocally) {
+					await loadSelection();
+				}
 			});
 
 			await loadSelection();
@@ -362,35 +376,40 @@ export function useOwlbear() {
 	}
 
 	const isLoadingSheet = ref(true);
+	// Drapeau pour éviter que nos propres modifications distantes/locales n'écrasent notre saisie en cours
+	let isSavingLocally = false;
+	let lastSavedTimestamp = 0;
+
 	async function loadSelection() {
 		const tokenId = currentSheetTokenId.value;
-		if (!tokenId) {
-			return;
-		}
-		if (!sheet.value) {
+		if (!tokenId) return;
+
+		// Si une sauvegarde locale est en cours, on ne recharge pas pour ne pas casser la saisie
+		if (isSavingLocally) return;
+
+		if (!sheet.value.id) {
 			isLoadingSheet.value = true;
 		}
 
 		const roomMetadata = await OBR.room.getMetadata();
 
-		// 1. Recherche par clé Monstre (ID unique)
 		let savedData = roomMetadata[`character_sheet_monster_${tokenId}`] as Partial<CharacterSheet> | null;
 
-		// 2. Si non trouvé, recherche par clé PJ (Nom)
 		if (!savedData) {
-			const char = availableTokens.value.find((char: CharacterSheet) => char.id === tokenId);
-
-			const tokenName = (char.name || '').trim();
-			const cleanName = tokenName.toLowerCase();
-
-			savedData = roomMetadata[`character_sheet_${cleanName}`] as Partial<CharacterSheet> | null;
+			const char = availableTokens.value.find((c: any) => c.id === tokenId);
+			if (char && char.name) {
+				const tokenName = char.name.trim();
+				const cleanName = tokenName.toLowerCase();
+				savedData = roomMetadata[`character_sheet_${cleanName}`] as Partial<CharacterSheet> | null;
+			}
 		}
 
 		if (savedData) {
+			// Optionnel : Si la donnée distante est plus ancienne ou identique à notre dernier envoi, on évite d'écraser aveuglément
 			sheet.value = JSON.parse(
 				JSON.stringify({
 					...savedData,
-					id: tokenId, // Mise à jour de l'ID courant
+					id: tokenId,
 				}),
 			);
 		}
@@ -398,11 +417,12 @@ export function useOwlbear() {
 		isLoadingSheet.value = false;
 	}
 
-	async function saveSheet() {
+	// Fonction de sauvegarde réelle
+	async function executeSaveSheet() {
 		if (!canEdit.value) return;
+		isSavingLocally = true;
 		const rawData = JSON.parse(JSON.stringify(toRaw(sheet.value)));
 
-		// Utilisation du nom du personnage pour créer une clé globale stable
 		const charName = (sheet.value.name || 'personnage').trim().toLowerCase();
 		let roomMetadataKey = `character_sheet_${charName}`;
 		if (sheet.value.type === 'monster') {
@@ -410,14 +430,22 @@ export function useOwlbear() {
 		}
 
 		try {
-			// 1. Sauvegarde globale dans la Room (partagée entre toutes les scènes et tous les tokens du même nom)
 			await OBR.room.setMetadata({
 				[roomMetadataKey]: rawData,
 			});
+			lastSavedTimestamp = Date.now();
 		} catch (e) {
 			console.error('Erreur lors de la sauvegarde de la fiche:', e);
+		} finally {
+			// On libère le verrou après un court instant
+			setTimeout(() => {
+				isSavingLocally = false;
+			}, 300);
 		}
 	}
+
+	// On applique un debounce de 400ms sur la fonction de sauvegarde accessible par l'app
+	const saveSheet = debounce(executeSaveSheet, 400);
 
 	function parseAndRollDice(diceNotation: string): { total: number; breakdown: string } {
 		let total = 0;
