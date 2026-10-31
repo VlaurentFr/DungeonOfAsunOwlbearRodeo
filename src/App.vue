@@ -173,7 +173,12 @@ async function startOwlbear() {
 
 async function handleLogin() {
 	const success = await signIn(loginEmail.value.trim(), loginPassword.value);
-	if (success) await startOwlbear();
+	if (success) {
+		if (user.value) {
+			await loadCampaign();
+			await startOwlbear();
+		}
+	}
 }
 
 const {
