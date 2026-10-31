@@ -45,6 +45,7 @@ import {
 	ShieldX,
 	GripVertical,
 	BookOpenText,
+	User,
 } from 'lucide-vue-next';
 
 // Gestion des largeurs de la pop-over OBR pour le mode split (Fiche + Chat)
@@ -777,12 +778,13 @@ onMounted(async () => {
 								maxlength="60"
 								autofocus
 								required
+								class="profession-name-input"
 							/>
 
 							<div class="modal-actions">
 								<button
 									type="submit"
-									class="btn-modal"
+									class="btn-modal btn-pj"
 									:disabled="isCreatingCharacter"
 								>
 									{{ isCreatingCharacter ? 'Création...' : 'Créer mon personnage' }}
@@ -802,10 +804,45 @@ onMounted(async () => {
 
 				<!-- SI AUCUN TOKEN SÉLECTIONNÉ -->
 				<div
-					v-if="!currentSheetTokenId"
+					v-if="!currentSheetTokenId && availableTokens.length > 0"
 					class="status-msg"
 				>
-					Veuillez sélectionner un personnage dans le menu ci-dessus.
+					<div class="no-sheet-content">
+						<User
+							:size="32"
+							class="no-sheet-icon-svg"
+						/>
+						<h3>Aucune fiche Sélectionnée</h3>
+						<p>Veuillez sélectionner un personnage dans le menu ci-dessus..</p>
+						<p>ou Veuillez en créer une nouvelle puis la sélectionnée.</p>
+						<button
+							v-if="!isGM"
+							@click="showCreateCharacterModal = true"
+							class="btn-dice btn-dice-main"
+						>
+							<Plus :size="14" /> Créer un personnage
+						</button>
+					</div>
+				</div>
+				<div
+					v-else-if="!currentSheetTokenId"
+					class="sheet-card no-sheet-card"
+				>
+					<div class="no-sheet-content">
+						<User
+							:size="32"
+							class="no-sheet-icon-svg"
+						/>
+						<h3>Aucune fiche trouvée</h3>
+						<p>Veuillez en créer une puis la sélectionnée.</p>
+						<button
+							v-if="!isGM"
+							@click="showCreateCharacterModal = true"
+							class="btn-dice btn-dice-main"
+						>
+							<Plus :size="14" /> Créer un personnage
+						</button>
+					</div>
 				</div>
 
 				<div
@@ -5177,6 +5214,38 @@ onMounted(async () => {
 	border: 1px solid #ec4899;
 }
 
+/* NO SHEET CARD */
+.no-sheet-card {
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	min-height: 250px;
+	background: #111827;
+	border: 1px solid #1e3a8a;
+}
+.no-sheet-content {
+	text-align: center;
+	padding: 20px;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+}
+.no-sheet-icon-svg {
+	color: #1d4ed8;
+}
+.no-sheet-content h3 {
+	margin: 0;
+	font-size: 1rem;
+	color: #1d4ed8;
+}
+.no-sheet-content p {
+	margin: 0;
+	font-size: 0.75rem;
+	color: #9ca3af;
+	max-width: 250px;
+	line-height: 1.3;
+}
 /* RESTRICTED CARD */
 .restricted-card {
 	display: flex;
