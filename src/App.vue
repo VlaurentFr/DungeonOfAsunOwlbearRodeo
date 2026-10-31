@@ -725,11 +725,11 @@ onMounted(async () => {
 					</button>
 
 					<button
-						v-if="!isGM && availableTokens.length === 0"
+						v-if="!isGM"
 						@click="showCreateCharacterModal = true"
 						class="btn-add"
 					>
-						<Plus :size="14" /> Créer mon personnage
+						<Plus :size="14" /> Créer un personnage
 					</button>
 
 					<div
