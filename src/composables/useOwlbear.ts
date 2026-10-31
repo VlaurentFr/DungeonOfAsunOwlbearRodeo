@@ -10,8 +10,19 @@ import {
 	getRankFromXp,
 	SPECIES_DATA,
 } from '../types/character';
+import { useCharacters } from './useCharacters';
+import { useAuth } from './useAuth';
+import { useCampaign } from './useCampaign';
+import { supabase } from '../lib/supabase';
 
 const BROADCAST_CHAT_CHANNEL = 'com.homebrew.sheet/chat_messages';
+const PLAYER_SHEET_KEY = 'com.homebrew.sheet/character';
+
+type CharacterSheetWithLegacyId = CharacterSheet & {
+	legacyId?: string;
+	supabaseId?: string;
+	supabaseOwnerIds?: string[];
+};
 
 // Définis le type d'un message de chat
 export interface ChatMessage extends DiceRollLog {
@@ -44,6 +55,17 @@ export function useOwlbear() {
 	const userRole = ref<'GM' | 'PLAYER'>('PLAYER');
 	// Liste réactive globale pour stocker tous les joueurs connus de la partie
 	const knownPlayers = ref<{ id: string; name: string; color: string }[]>([]);
+
+	const {
+		listCharacters,
+		loadCharacter,
+		saveCharacter: saveSupabaseCharacter,
+		deleteCharacter: deleteSupabaseCharacter,
+	} = useCharacters();
+
+	const { user } = useAuth();
+
+	const { campaign } = useCampaign();
 
 	async function initRoomPlayersObserver() {
 		// 1. Récupérer les joueurs actuellement connectés
@@ -115,7 +137,25 @@ export function useOwlbear() {
 	});
 
 	const isGM = computed(() => userRole.value === 'GM');
-	const canEdit = computed(() => isGM.value || sheet.value.ownerIds.includes(currentUserId.value));
+	const canEdit = computed(() => {
+		if (isGM.value) return true;
+
+		if (sheet.value.type !== 'pj') return false;
+
+		const character = partySheets.value.find((entry) => entry.id === sheet.value.id);
+
+		return character?.supabaseOwnerIds?.includes(user.value?.id ?? '') ?? false;
+	});
+
+	const availableTokens = computed(() => {
+		if (isGM.value) return partySheets.value;
+
+		const supabaseUserId = user.value?.id;
+
+		if (!supabaseUserId) return [];
+
+		return partySheets.value.filter((char) => char.type === 'pj' && char.supabaseOwnerIds?.includes(supabaseUserId));
+	});
 
 	const currentSpeciesData = computed(() => SPECIES_DATA[sheet.value.species] || SPECIES_DATA['Aucune']);
 
@@ -182,31 +222,11 @@ export function useOwlbear() {
 	// ID du token actuellement sélectionné dans la liste déroulante de l'extension
 	const currentSheetTokenId = ref<string | null>(null);
 
-	// Liste filtrée des tokens disponibles
-	const availableTokens = computed(() => {
-		if (isGM.value) {
-			return partySheets.value; // Le MJ voit toutes les fiches de la scène
-		}
-
-		// Pour un joueur classique : on garde uniquement les fiches où son ID figure dans 'ownerIds'
-		return partySheets.value.filter((char) => char.ownerIds && char.ownerIds.includes(currentUserId.value));
-	});
-
 	async function changeActiveToken(tokenId: string | null) {
 		currentSheetTokenId.value = tokenId;
 		await loadSelection();
 		// Optionnel : si tu veux aussi synchroniser avec la sélection sur la carte d'Owlbear Rodeo
 		// await OBR.scene.items.select([tokenId]);
-	}
-	// Fonction utilitaire de debounce pour éviter les écritures simultanées en rafale
-	function debounce<T extends (...args: any[]) => any>(fn: T, delay: number): (...args: Parameters<T>) => void {
-		let timeoutId: ReturnType<typeof setTimeout> | null = null;
-		return (...args: Parameters<T>) => {
-			if (timeoutId) clearTimeout(timeoutId);
-			timeoutId = setTimeout(() => {
-				fn(...args);
-			}, delay);
-		};
 	}
 
 	let scrollChat = () => {};
@@ -222,32 +242,32 @@ export function useOwlbear() {
 
 			OBR.broadcast.onMessage(BROADCAST_CHAT_CHANNEL, async (event) => {
 				const msg = event.data as ChatMessage;
-				// Si c'est un chuchotement (whisper), on ne l'affiche que si on est l'expéditeur ou le MJ
 				if (msg.isWhisper) {
-					if (isGM.value || msg.senderId === currentUserId.value) {
-						chatMessages.value.push(msg);
-					}
+					if (isGM.value || msg.senderId === currentUserId.value) chatMessages.value.push(msg);
 				} else {
 					chatMessages.value.push(msg);
 				}
-
-				if (!msg.isWhisper || isGM.value || msg.senderId === currentUserId.value) {
-					await scrollChat(); // <-- On déclenche le scroll ici pour les autres
-				}
+				if (!msg.isWhisper || isGM.value || msg.senderId === currentUserId.value) await scrollChat();
 			});
 
-			initRoomPlayersObserver();
+			await initRoomPlayersObserver();
+			await initPartyOverview();
+			subscribeToCharacterChanges();
 
-			initPartyOverview();
-
-			// Écoute les changements globaux de la room pour synchroniser en direct
-			OBR.room.onMetadataChange(async (metadata) => {
-				updatePartyListFromMetadata(metadata);
-
-				// Si le joueur est en train de modifier/sauvegarder activement, on ignore le refresh distant immédiat
-				if (!isSavingLocally) {
-					await loadSelection();
+			OBR.party.onChange(async (players) => {
+				if (isGM.value) await mergePartyPlayers(players);
+			});
+			OBR.player.onChange(async (player) => {
+				if (!isGM.value) {
+					const ownSheet = player.metadata?.[PLAYER_SHEET_KEY] as CharacterSheet | undefined;
+					if (ownSheet?.type === 'pj') {
+						upsertPartySheet(ownSheet);
+						currentSheetTokenId.value = ownSheet.id;
+					}
 				}
+			});
+			OBR.room.onMetadataChange(async () => {
+				if (!isSavingLocally) await loadSelection();
 			});
 
 			await loadSelection();
@@ -255,64 +275,49 @@ export function useOwlbear() {
 		});
 	}
 
-	// Fonction d'initialisation adaptée avec choix du type
-	async function initializeTokenSheet(tokenId: string, sheetType: 'pj' | 'monster') {
+	async function initializeTokenSheet(tokenId: string) {
+		if (!isGM.value) return;
+
 		const items = await OBR.scene.items.getItems([tokenId]);
 		const item = items[0];
+
 		if (!item) return;
 
-		const baseName = (item.name || (sheetType === 'pj' ? 'Nouveau Joueur' : 'Monstre')).trim();
-		const cleanName = baseName.toLowerCase().replace(/\s+/g, '_');
-
-		const roomMetadata = await OBR.room.getMetadata();
-		let roomMetadataKey = '';
+		const baseName = (item.name || 'Monstre').trim();
 		let finalName = baseName;
 
-		if (sheetType === 'pj') {
-			// Clé basée sur le NOM du joueur (persistance inter-scènes)
-			roomMetadataKey = `character_sheet_${cleanName}`;
-			if (roomMetadata[roomMetadataKey]) {
-				console.warn('Une fiche de Joueur existe déjà avec ce nom.');
-			}
-		} else {
-			// Clé basée sur le TOKEN ID du monstre (indépendance totale des PV)
-			roomMetadataKey = `character_sheet_monster_${tokenId}`;
+		// Compter les monstres déjà présents dans Supabase
+		const sameNameCount = partySheets.value.filter(
+			(entry) => entry.type === 'monster' && (entry.name === baseName || entry.name.startsWith(`${baseName} `)),
+		).length;
 
-			// Compteur cosmétique pour le nom sur la carte (ex: Gobelin 1, Gobelin 2)
-			let counter = 1;
-			const existingMonsterKeys = Object.keys(roomMetadata).filter((k) => k.startsWith('character_sheet_monster_'));
-			const sameNameCount = existingMonsterKeys.filter((k) => {
-				const data = roomMetadata[k] as any;
-				return data && data.name && data.name.startsWith(baseName);
-			}).length;
+		if (sameNameCount > 0) {
+			finalName = `${baseName} ${sameNameCount + 1}`;
 
-			if (sameNameCount > 0) {
-				counter = sameNameCount + 1;
-				finalName = `${baseName} ${counter}`;
-				// On met à jour le nom du pion sur la carte OBR
-				await OBR.scene.items.updateItems([tokenId], (itemsToUpdate) => {
-					for (const it of itemsToUpdate) {
-						it.name = finalName;
-					}
-				});
-			}
+			await OBR.scene.items.updateItems([tokenId], (itemsToUpdate) => {
+				for (const it of itemsToUpdate) {
+					it.name = finalName;
+				}
+			});
 		}
 
-		// Fiche par défaut
-		const defaultSheet: CharacterSheet = {
+		const monsterSheet: CharacterSheet = {
 			id: tokenId,
-			type: sheetType,
+			type: 'monster',
 			name: finalName,
 			species: 'Aucune',
-			professionName: '',
-			professionDescription: '',
 			ownerIds: [],
-			stats: { force: 10, dexterite: 10, intellect: 10, sagesse: 10 },
+			stats: {
+				force: 10,
+				dexterite: 10,
+				intellect: 10,
+				sagesse: 10,
+			},
 			weaponXp: { ...DEFAULT_WEAPON_XP },
-			hpCurrent: sheetType === 'pj' ? 30 : 20,
-			hpMax: sheetType === 'pj' ? 30 : 20,
-			peCurrent: sheetType === 'pj' ? 40 : 10,
-			peMax: sheetType === 'pj' ? 40 : 10,
+			hpCurrent: 20,
+			hpMax: 20,
+			peCurrent: 10,
+			peMax: 10,
 			wounds: [false, false, false, false, false, false],
 			corruption: 0,
 			ec: 0,
@@ -324,13 +329,18 @@ export function useOwlbear() {
 			subTabOrder: [],
 		};
 
-		// Enregistrement dans la Room
-		await OBR.room.setMetadata({
-			[roomMetadataKey]: defaultSheet,
-		});
+		try {
+			// L'identifiant du pion sert de legacyId pour ce monstre
+			await saveSupabaseCharacter(tokenId, monsterSheet);
 
-		currentSheetTokenId.value = tokenId;
-		await loadSelection();
+			currentSheetTokenId.value = tokenId;
+
+			await initPartyOverview();
+			await loadSelection();
+		} catch (error) {
+			console.error('Erreur lors de la création du monstre :', error);
+			alert('Impossible de créer la fiche du monstre dans Supabase.');
+		}
 	}
 
 	async function sendChatMessage(
@@ -378,63 +388,171 @@ export function useOwlbear() {
 	const isLoadingSheet = ref(true);
 	// Drapeau pour éviter que nos propres modifications ne réinitialisent notre saisie
 	let isSavingLocally = false;
+	// Suivi des modifications locales en attente de sauvegarde
+	// Suivi des modifications locales, séparément pour chaque personnage
+	const localChangeVersions = new Map<string, number>();
+	const savedChangeVersions = new Map<string, number>();
+
+	// Dernière version de référence connue pour chaque personnage
+	const baseSheetSnapshots = new Map<string, CharacterSheet>();
+
+	function hasPendingLocalChanges(characterId: string) {
+		const localVersion = localChangeVersions.get(characterId) ?? 0;
+		const savedVersion = savedChangeVersions.get(characterId) ?? 0;
+
+		return localVersion !== savedVersion;
+	}
+
+	function cloneSheet<T extends CharacterSheet>(data: T): T {
+		return JSON.parse(JSON.stringify(data));
+	}
+
+	function mergeThreeWay(base: any, local: any, remote: any, path = ''): { value: any; conflicts: string[] } {
+		const equal = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
+
+		// Le local n'a pas changé : on prend la version distante.
+		if (equal(local, base)) {
+			return { value: remote, conflicts: [] };
+		}
+
+		// Le distant n'a pas changé : on conserve le local.
+		if (equal(remote, base) || equal(local, remote)) {
+			return { value: local, conflicts: [] };
+		}
+
+		// Fusion récursive des objets, mais pas des tableaux.
+		// Les tableaux modifiés des deux côtés seront traités comme un conflit.
+		const isObject = (value: any) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+		if (isObject(base) && isObject(local) && isObject(remote)) {
+			const value: Record<string, any> = {};
+			const conflicts: string[] = [];
+			const keys = new Set([...Object.keys(base), ...Object.keys(local), ...Object.keys(remote)]);
+
+			for (const key of keys) {
+				const result = mergeThreeWay(base[key], local[key], remote[key], path ? `${path}.${key}` : key);
+
+				if (result.value !== undefined) {
+					value[key] = result.value;
+				}
+
+				conflicts.push(...result.conflicts);
+			}
+
+			return { value, conflicts };
+		}
+
+		// Les deux versions ont modifié la même valeur.
+		return {
+			value: local,
+			conflicts: [path || 'valeur inconnue'],
+		};
+	}
 
 	async function loadSelection() {
 		const tokenId = currentSheetTokenId.value;
-		if (!tokenId) return;
+		if (!tokenId || isSavingLocally) return;
 
-		// Si une sauvegarde locale est en cours, on ne recharge pas pour ne pas casser la saisie
-		if (isSavingLocally) return;
+		const currentCharacterId = sheet.value.id;
 
-		if (!sheet.value.id) {
-			isLoadingSheet.value = true;
-		}
+		if (currentCharacterId && hasPendingLocalChanges(currentCharacterId)) {
+			// Annule la sauvegarde différée pour la déclencher immédiatement
+			if (saveTimeoutId) {
+				clearTimeout(saveTimeoutId);
+				saveTimeoutId = null;
+			}
 
-		const roomMetadata = await OBR.room.getMetadata();
+			const saved = await executeSaveSheet();
 
-		let savedData = roomMetadata[`character_sheet_monster_${tokenId}`] as Partial<CharacterSheet> | null;
-
-		if (!savedData) {
-			const char = availableTokens.value.find((c: any) => c.id === tokenId);
-			if (char && char.name) {
-				const tokenName = char.name.trim();
-				const cleanName = tokenName.toLowerCase();
-				savedData = roomMetadata[`character_sheet_${cleanName}`] as Partial<CharacterSheet> | null;
+			// Ne change pas de fiche si la sauvegarde a échoué
+			// ou si de nouvelles modifications sont intervenues entre-temps
+			if (!saved || hasPendingLocalChanges(currentCharacterId)) {
+				console.warn('Changement de fiche annulé : les modifications ne sont pas toutes sauvegardées.');
+				return;
 			}
 		}
 
-		if (savedData) {
-			sheet.value = JSON.parse(
-				JSON.stringify({
-					...savedData,
-					id: tokenId,
-				}),
-			);
-		}
+		isLoadingSheet.value = true;
 
-		isLoadingSheet.value = false;
+		try {
+			// Retrouver la fiche associée au pion Owlbear
+			const characterEntry = partySheets.value.find((entry) => entry.id === tokenId);
+
+			if (!characterEntry?.legacyId) {
+				console.warn('Aucune fiche Supabase associée à ce pion :', tokenId);
+				return;
+			}
+
+			// Charger la fiche depuis Supabase
+			const record = await loadCharacter(characterEntry.legacyId);
+
+			if (record) {
+				const loadedSheet = cloneSheet({
+					...record.data,
+					id: tokenId,
+				});
+
+				sheet.value = loadedSheet;
+				baseSheetSnapshots.set(tokenId, cloneSheet(loadedSheet));
+			} else {
+				console.warn('Fiche introuvable dans Supabase :', tokenId);
+			}
+		} catch (error) {
+			currentSheetTokenId.value = currentCharacterId;
+			console.error('Erreur lors du chargement de la fiche :', error);
+		} finally {
+			isLoadingSheet.value = false;
+		}
 	}
 
 	// Fonction de sauvegarde réelle
-	async function executeSaveSheet() {
-		if (!canEdit.value) return;
-		isSavingLocally = true;
-		const rawData = JSON.parse(JSON.stringify(toRaw(sheet.value)));
+	// Fonction de sauvegarde réelle dans Supabase
+	async function executeSaveSheet(): Promise<boolean> {
+		if (!canEdit.value || !sheet.value.id) return false;
 
-		const charName = (sheet.value.name || 'personnage').trim().toLowerCase();
-		let roomMetadataKey = `character_sheet_${charName}`;
-		if (sheet.value.type === 'monster') {
-			roomMetadataKey = `character_sheet_monster_${sheet.value.id}`;
-		}
+		isSavingLocally = true;
 
 		try {
-			await OBR.room.setMetadata({
-				[roomMetadataKey]: rawData,
-			});
-		} catch (e) {
-			console.error('Erreur lors de la sauvegarde de la fiche:', e);
+			const rawData = cleanSheetForSaving(toRaw(sheet.value)) as CharacterSheet;
+
+			const changeVersion = localChangeVersions.get(rawData.id) ?? 0;
+
+			// Retrouve l'identifiant de liaison avec Supabase
+			const characterEntry = partySheets.value.find((entry) => entry.id === rawData.id);
+
+			const legacyId = characterEntry?.legacyId;
+
+			if (!legacyId) {
+				throw new Error(`Aucun identifiant Supabase associé au pion ${rawData.id}.`);
+			}
+
+			// Sauvegarde dans Supabase
+			await saveSupabaseCharacter(legacyId, rawData);
+
+			// Actualise la liste locale des fiches
+			const updatedEntry = {
+				...rawData,
+				legacyId,
+				supabaseId: characterEntry?.supabaseId,
+				supabaseOwnerIds: characterEntry?.supabaseOwnerIds ?? [],
+			};
+
+			const index = partySheets.value.findIndex((entry) => entry.id === rawData.id);
+
+			if (index === -1) {
+				partySheets.value.push(updatedEntry);
+			} else {
+				partySheets.value[index] = updatedEntry;
+			}
+
+			savedChangeVersions.set(rawData.id, changeVersion);
+			baseSheetSnapshots.set(rawData.id, cloneSheet(rawData));
+
+			return true;
+		} catch (error) {
+			console.error('Erreur lors de la sauvegarde de la fiche dans Supabase :', error);
+			return false;
 		} finally {
-			// On libère le verrou après un court instant
 			setTimeout(() => {
 				isSavingLocally = false;
 			}, 300);
@@ -442,7 +560,26 @@ export function useOwlbear() {
 	}
 
 	// Applique le debounce de 400ms sur la sauvegarde
-	const saveSheet = debounce(executeSaveSheet, 400);
+	let saveTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+	function scheduleSaveSheet() {
+		if (saveTimeoutId) clearTimeout(saveTimeoutId);
+
+		saveTimeoutId = setTimeout(() => {
+			saveTimeoutId = null;
+			void executeSaveSheet();
+		}, 5000);
+	}
+
+	function saveSheet() {
+		const characterId = sheet.value.id;
+		if (!characterId) return;
+
+		const currentVersion = localChangeVersions.get(characterId) ?? 0;
+		localChangeVersions.set(characterId, currentVersion + 1);
+
+		scheduleSaveSheet();
+	}
 
 	function parseAndRollDice(diceNotation: string): { total: number; breakdown: string } {
 		let total = 0;
@@ -817,41 +954,6 @@ export function useOwlbear() {
 		await broadcastLog(logEntry);
 	}
 
-	async function toggleOwner(playerId: string) {
-		if (!isGM.value) return;
-
-		const list = [...sheet.value.ownerIds];
-		const index = list.indexOf(playerId);
-		let newPrimaryOwner = '';
-
-		if (index === -1) {
-			// 1. On AJOUTE le joueur aux propriétaires de la fiche
-			list.push(playerId);
-			newPrimaryOwner = playerId; // On lui donne le contrôle du token
-		} else {
-			// 2. On RETIRE le joueur des propriétaires
-			list.splice(index, 1);
-			// S'il reste d'autres owners, on prend le premier, sinon on redonne la main au MJ
-			newPrimaryOwner = list.length > 0 ? list[0] : currentUserId.value;
-		}
-
-		// Mettre à jour la fiche locale
-		sheet.value.ownerIds = list;
-
-		// --- SYNCHRONISATION DU TOKEN SUR LA SCÈNE ---
-		if (sheet.value.id) {
-			await OBR.scene.items.updateItems([sheet.value.id], (items) => {
-				for (const item of items) {
-					// Applique le nouvel utilisateur principal qui peut déplacer le jeton
-					item.createdUserId = newPrimaryOwner;
-				}
-			});
-		}
-
-		// Sauvegarde de la fiche dans room.metadata
-		await saveSheet();
-	}
-
 	async function addWeapon() {
 		if (!canEdit.value) return;
 		sheet.value.weapons.push({
@@ -1048,9 +1150,12 @@ export function useOwlbear() {
 				}
 
 				// On injecte les données dans la fiche actuelle tout en gardant l'ID du token courant
+				const importedType: 'pj' | 'monster' = isGM.value ? 'monster' : 'pj';
 				sheet.value = {
 					...importedData,
-					id: sheet.value.id, // Conserve l'ID du token actif sur la scène
+					id: sheet.value.id, // Conserve l'identifiant de la fiche active
+					type: importedType,
+					ownerIds: importedType === 'pj' ? [currentUserId.value] : [],
 				};
 
 				// Sauvegarde automatique dans les métadonnées de la Room pour propager le changement
@@ -1067,82 +1172,331 @@ export function useOwlbear() {
 		reader.readAsText(file);
 	}
 
-	// Liste de toutes les fiches des personnages présents dans la salle
-	const partySheets = ref<any[]>([]);
+	// Les fiches PJ sont créées une fois par joueur et stockées dans ses métadonnées personnelles.
+	// Le MJ ne reçoit que les fiches des joueurs actuellement connectés via OBR.party.getPlayers().
+	const partySheets = ref<CharacterSheetWithLegacyId[]>([]);
 
-	// Fonction pour charger / écouter les fiches de la room
+	function upsertPartySheet(character: CharacterSheet) {
+		const index = partySheets.value.findIndex((entry) => entry.id === character.id);
+		if (index === -1) partySheets.value.push(cloneSheet(character));
+		else partySheets.value[index] = cloneSheet(character);
+	}
+
+	async function mergePartyPlayers(_players: any[]) {
+		if (!isGM.value) return;
+
+		// Supabase est désormais la source de vérité
+		await initPartyOverview();
+	}
+
 	async function initPartyOverview() {
-		const metadata = await OBR.room.getMetadata();
-		// Supposons que tu stockes tes fiches sous une clé structurée comme "com.homebrew.sheet/character_*"
-		// Ou tu peux parser les métadonnées de la room :
-		updatePartyListFromMetadata(metadata);
-	}
+		try {
+			const records = await listCharacters();
 
-	function updatePartyListFromMetadata(metadata: any) {
-		const sheets: any[] = [];
-		for (const key in metadata) {
-			if (key.startsWith('character_sheet_') && metadata[key] !== undefined && metadata[key] !== null) {
-				sheets.push(metadata[key]);
-			}
+			partySheets.value = records.map((record) => ({
+				...record.data,
+				id: record.data.id,
+				legacyId: record.legacyId,
+				supabaseId: record.id,
+				supabaseOwnerIds: record.supabaseOwnerIds,
+			}));
+		} catch (error) {
+			console.error('Erreur lors du chargement des fiches Supabase :', error);
 		}
-		partySheets.value = sheets;
 	}
-	function cleanSheetForSaving(sheetData: any) {
-		// Crée une copie propre
-		const clean = JSON.parse(JSON.stringify(sheetData));
 
-		// Nettoie les armes sans description pour alléger
-		clean.weapons = clean.weapons.map((w: any) => {
+	let charactersChannel: ReturnType<typeof supabase.channel> | null = null;
+
+	function subscribeToCharacterChanges() {
+		// Évite de créer plusieurs abonnements
+		if (charactersChannel) {
+			supabase.removeChannel(charactersChannel);
+			charactersChannel = null;
+		}
+
+		const campaignId = campaign.value?.id;
+
+		if (!campaignId) {
+			console.warn('Impossible de démarrer Realtime : aucune campagne sélectionnée.');
+			return;
+		}
+
+		charactersChannel = supabase
+			.channel(`characters-${campaignId}`)
+			.on(
+				'postgres_changes',
+				{
+					event: '*',
+					schema: 'public',
+					table: 'characters',
+					filter: `campaign_id=eq.${campaignId}`,
+				},
+				async (payload) => {
+					console.log('[Realtime] Événement reçu :', payload.eventType, payload);
+					// Synchronisation des suppressions
+					if (payload.eventType === 'DELETE') {
+						const deletedRow = payload.old as {
+							id?: string;
+						};
+
+						if (!deletedRow.id) {
+							console.warn('Suppression Realtime ignorée : identifiant Supabase introuvable.', payload.old);
+							return;
+						}
+
+						const deletedEntry = partySheets.value.find((entry) => entry.supabaseId === deletedRow.id);
+
+						if (!deletedEntry) return;
+
+						partySheets.value = partySheets.value.filter((entry) => entry.supabaseId !== deletedRow.id);
+
+						baseSheetSnapshots.delete(deletedEntry.id);
+						localChangeVersions.delete(deletedEntry.id);
+						savedChangeVersions.delete(deletedEntry.id);
+
+						if (currentSheetTokenId.value === deletedEntry.id) {
+							currentSheetTokenId.value = null;
+							sheet.value.id = '';
+						}
+
+						return;
+					}
+
+					const row = payload.new as {
+						legacy_id?: string;
+					};
+
+					if (!row.legacy_id) return;
+
+					// Retrouve la fiche concernée dans notre liste locale.
+					const existingEntry = partySheets.value.find((entry) => entry.legacyId === row.legacy_id);
+
+					if (!existingEntry) {
+						await initPartyOverview();
+						return;
+					}
+
+					try {
+						if (isSavingLocally) return;
+
+						const record = await loadCharacter(row.legacy_id);
+
+						if (!record) return;
+
+						const isCurrentSheet = currentSheetTokenId.value === existingEntry.id;
+						const hasLocalChanges = hasPendingLocalChanges(existingEntry.id);
+
+						const remoteSheet = cloneSheet({
+							...record.data,
+							id: existingEntry.id,
+						});
+
+						let updatedSheet = remoteSheet;
+
+						if (hasLocalChanges) {
+							const baseSheet = baseSheetSnapshots.get(existingEntry.id);
+
+							if (!baseSheet) {
+								console.warn('Fusion impossible : aucune version de référence disponible.');
+								return;
+							}
+
+							const localSheet = cloneSheet(isCurrentSheet ? sheet.value : existingEntry);
+
+							const result = mergeThreeWay(baseSheet, localSheet, remoteSheet);
+
+							updatedSheet = result.value as CharacterSheet;
+
+							if (result.conflicts.length > 0) {
+								console.warn(
+									'Conflits de modification détectés. Les valeurs locales ont été conservées :',
+									result.conflicts,
+								);
+							}
+						}
+
+						// La nouvelle référence devient la dernière version distante connue.
+						baseSheetSnapshots.set(existingEntry.id, cloneSheet(remoteSheet));
+
+						const updatedEntry = {
+							...updatedSheet,
+							legacyId: existingEntry.legacyId,
+							supabaseOwnerIds: existingEntry.supabaseOwnerIds,
+						};
+
+						const index = partySheets.value.findIndex((entry) => entry.legacyId === row.legacy_id);
+
+						if (index !== -1) {
+							partySheets.value[index] = updatedEntry;
+						}
+
+						if (isCurrentSheet && !isLoadingSheet.value) {
+							sheet.value = cloneSheet(updatedSheet);
+						}
+
+						// Si des changements locaux ont été conservés, on sauvegarde
+						// la fiche fusionnée avec la nouvelle version distante.
+						if (hasLocalChanges) {
+							scheduleSaveSheet();
+						}
+					} catch (error) {
+						console.error('Erreur lors de la synchronisation Realtime :', error);
+					}
+				},
+			)
+			.subscribe((status) => {
+				console.log('Statut Realtime :', status);
+			});
+	}
+
+	async function createPlayerCharacter(name: string): Promise<void> {
+		if (isGM.value) {
+			throw new Error('Seul un joueur peut créer son personnage depuis cette fonction.');
+		}
+
+		const userId = user.value?.id;
+
+		if (!userId) {
+			throw new Error('Aucun compte Supabase connecté.');
+		}
+
+		const characterName = name.trim();
+
+		if (!characterName) {
+			throw new Error('Le nom du personnage est obligatoire.');
+		}
+
+		// Empêche la création de plusieurs fiches pour le même compte
+		const existingCharacter = partySheets.value.find((entry) => entry.supabaseOwnerIds?.includes(userId));
+
+		if (existingCharacter) {
+			throw new Error('Tu possèdes déjà une fiche dans cette campagne.');
+		}
+
+		// Identifiant stable, indépendant des pions Owlbear
+		const legacyId = `pj-${userId}`;
+
+		const playerSheet: CharacterSheet = {
+			id: legacyId,
+			type: 'pj',
+			name: characterName,
+			species: 'Aucune',
+			ownerIds: [],
+			stats: {
+				force: 10,
+				dexterite: 10,
+				intellect: 10,
+				sagesse: 10,
+			},
+			weaponXp: { ...DEFAULT_WEAPON_XP },
+			hpCurrent: 30,
+			hpMax: 30,
+			peCurrent: 40,
+			peMax: 40,
+			wounds: [false, false, false, false, false, false],
+			corruption: 0,
+			ec: 0,
+			spells: [],
+			weapons: [],
+			armors: [],
+			feats: [],
+			inventory: [],
+			subTabOrder: [],
+		};
+
+		// Création dans Supabase et attribution au compte connecté
+		await saveSupabaseCharacter(legacyId, playerSheet);
+
+		// Recharge les fiches depuis Supabase
+		await initPartyOverview();
+
+		// Sélectionne le personnage nouvellement créé
+		currentSheetTokenId.value = legacyId;
+		await loadSelection();
+	}
+
+	function cleanSheetForSaving(sheetData: any) {
+		const clean = JSON.parse(JSON.stringify(sheetData));
+		clean.weapons = (clean.weapons || []).map((w: any) => {
 			if (!w.description) delete w.description;
 			return w;
 		});
-
-		// Nettoie les sorts
-		clean.spells = clean.spells.map((s: any) => {
-			if (!s.description) delete s.description;
-			return s;
+		clean.spells = (clean.spells || []).map((spell: any) => {
+			if (!spell.description) delete spell.description;
+			return spell;
 		});
-
-		// Nettoie l'inventaire
-		clean.inventory = clean.inventory.map((i: any) => {
-			if (!i.description) delete i.description;
-			if (!i.formula) delete i.formula;
-			return i;
+		clean.inventory = (clean.inventory || []).map((item: any) => {
+			if (!item.description) delete item.description;
+			if (!item.formula) delete item.formula;
+			return item;
 		});
-
 		return clean;
 	}
 
 	async function saveCharacter(character: any) {
-		const rawData = cleanSheetForSaving(toRaw(sheet.value));
+		if (!character || character.type !== 'monster' || !isGM.value) return;
 
-		// Utilisation du nom du personnage pour créer une clé globale stable
-		const charName = (character.name || 'personnage').trim().toLowerCase();
-		let roomMetadataKey = `character_sheet_${charName}`;
-		if (character.type === 'monster') {
-			roomMetadataKey = `character_sheet_monster_${character.id}`;
+		try {
+			const rawData = cleanSheetForSaving(character) as CharacterSheet;
+
+			// Retrouve l'identifiant de liaison Supabase
+			const characterEntry = partySheets.value.find((entry) => entry.id === rawData.id);
+
+			const legacyId = character.legacyId || characterEntry?.legacyId;
+
+			if (!legacyId) {
+				throw new Error(`Aucun identifiant Supabase associé au monstre ${rawData.name}.`);
+			}
+
+			// Sauvegarde dans Supabase
+			await saveSupabaseCharacter(legacyId, rawData);
+
+			// Actualise la liste locale
+			const updatedEntry = {
+				...rawData,
+				legacyId,
+				supabaseId: characterEntry?.supabaseId,
+			};
+
+			const index = partySheets.value.findIndex((entry) => entry.id === rawData.id);
+
+			if (index === -1) {
+				partySheets.value.push(updatedEntry);
+			} else {
+				partySheets.value[index] = updatedEntry;
+			}
+		} catch (error) {
+			console.error('Erreur lors de la sauvegarde du monstre dans Supabase :', error);
 		}
-
-		// 1. Sauvegarde globale dans la Room (partagée entre toutes les scènes et tous les tokens du même nom)
-		await OBR.room.setMetadata({
-			[roomMetadataKey]: rawData,
-		});
 	}
 
 	async function deleteMetadata(character: any) {
-		const charName = (character.name || 'personnage').trim().toLowerCase();
+		if (!isGM.value || !character?.id) return;
 
-		let roomMetadataKey = `character_sheet_${charName}`;
-		if (character.type === 'monster') {
-			roomMetadataKey = `character_sheet_monster_${character.id}`;
+		try {
+			// Retrouve l'identifiant de liaison avec Supabase
+			const characterEntry = partySheets.value.find((entry) => entry.id === character.id);
+
+			const legacyId = character.legacyId || characterEntry?.legacyId;
+
+			if (!legacyId) {
+				throw new Error(`Aucun identifiant Supabase associé au monstre ${character.name}.`);
+			}
+
+			// Supprime la fiche dans Supabase
+			await deleteSupabaseCharacter(legacyId);
+
+			// Actualise la liste locale
+			partySheets.value = partySheets.value.filter((entry) => entry.id !== character.id);
+
+			// Ferme la fiche si elle était ouverte
+			if (currentSheetTokenId.value === character.id) {
+				currentSheetTokenId.value = null;
+				sheet.value.id = '';
+			}
+		} catch (error) {
+			console.error('Erreur lors de la suppression du monstre dans Supabase :', error);
 		}
-		// const roomMetadataKey = `character_sheet_undead 1_1`;
-		// const roomMetadata = await OBR.room.getMetadata();
-		// console.log('delete', roomMetadata, charName);
-
-		await OBR.room.setMetadata({
-			[roomMetadataKey]: undefined,
-		});
 	}
 
 	async function focusAndSelectToken(tokenId: string) {
@@ -1194,11 +1548,10 @@ export function useOwlbear() {
 		toggleWound,
 		updateHp,
 		updatePe,
-		toggleOwner,
 		handleUseConsumable,
 		sendChatMessage,
 		initPartyOverview,
-		updatePartyListFromMetadata,
+		createPlayerCharacter,
 		deleteMetadata,
 		saveCharacter,
 		focusAndSelectToken,

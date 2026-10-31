@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, nextTick } from 'vue';
 import { useOwlbear } from './composables/useOwlbear';
+import { useAuth } from './composables/useAuth';
+import { useCampaign } from './composables/useCampaign';
 import { type StatName, type WeaponType, getRankFromXp, SPECIES_DATA } from './types/character';
 import OBR from '@owlbear-rodeo/sdk';
 import draggable from 'vuedraggable';
 
 // Importation des icônes propres depuis Lucide (avec CheckCircle2 et XCircle)
 import {
+	Scroll,
 	ScrollText,
 	Dices,
 	Lock,
@@ -21,7 +24,6 @@ import {
 	HelpCircle,
 	X,
 	Plus,
-	Key,
 	Coins,
 	Backpack,
 	Star,
@@ -69,6 +71,7 @@ async function toggleDetachChat() {
 function toggleChatPosition() {
 	chatPosition.value = chatPosition.value === 'right' ? 'left' : 'right';
 }
+const { loadCampaign } = useCampaign();
 
 // Onglet principal
 const activeTab = ref<'sheet' | 'roller' | 'logs' | 'help' | 'chat' | 'gm-dashboard'>('sheet');
@@ -153,6 +156,24 @@ const customBonus = ref<number>(0);
 const customLabel = ref<string>('');
 const isRollSecret = ref<boolean>(false);
 
+// Authentification Supabase : Owlbear ne démarre qu'après connexion.
+const { user, isLoading: isAuthLoading, authError, initAuth, signIn } = useAuth();
+
+const loginEmail = ref('');
+const loginPassword = ref('');
+let owlbearInitialized = false;
+
+async function startOwlbear() {
+	if (owlbearInitialized) return;
+	owlbearInitialized = true;
+	await init(scrollToBottom);
+}
+
+async function handleLogin() {
+	const success = await signIn(loginEmail.value.trim(), loginPassword.value);
+	if (success) await startOwlbear();
+}
+
 const {
 	isReady,
 	isGM,
@@ -191,7 +212,6 @@ const {
 	toggleWound,
 	updateHp,
 	updatePe,
-	toggleOwner,
 	handleUseConsumable,
 	executeFormulaRoll,
 	sendChatMessage,
@@ -202,9 +222,12 @@ const {
 	protectionPenaltyChar,
 	changeActiveToken,
 	initializeTokenSheet,
+	createPlayerCharacter,
 	exportCharacterSheet,
 	importCharacterSheet,
 } = useOwlbear();
+
+const showInitModal = ref(false);
 
 const statLabels: Record<StatName, string> = {
 	force: 'Force',
@@ -484,7 +507,6 @@ function onDragEnd() {
 	saveSheet();
 }
 
-const showInitModal = ref(false);
 const pendingTokenId = ref<string | null>(null);
 
 async function openInitModal() {
@@ -497,11 +519,37 @@ async function openInitModal() {
 	}
 }
 
-async function confirmInit(type: 'pj' | 'monster') {
+async function confirmInit() {
 	if (pendingTokenId.value) {
-		await initializeTokenSheet(pendingTokenId.value, type);
+		await initializeTokenSheet(pendingTokenId.value);
 		showInitModal.value = false;
 		pendingTokenId.value = null;
+	}
+}
+
+const showCreateCharacterModal = ref(false);
+const newCharacterName = ref('');
+const isCreatingCharacter = ref(false);
+
+async function confirmCreateCharacter() {
+	const name = newCharacterName.value.trim();
+
+	if (!name) {
+		alert('Veuillez saisir un nom pour votre personnage.');
+		return;
+	}
+
+	isCreatingCharacter.value = true;
+
+	try {
+		await createPlayerCharacter(name);
+		showCreateCharacterModal.value = false;
+		newCharacterName.value = '';
+	} catch (error) {
+		console.error('Erreur lors de la création du personnage :', error);
+		alert(error instanceof Error ? error.message : 'Impossible de créer le personnage.');
+	} finally {
+		isCreatingCharacter.value = false;
 	}
 }
 
@@ -511,13 +559,72 @@ function triggerFileInput() {
 	fileInputRef.value?.click();
 }
 
-onMounted(() => {
-	init(scrollToBottom);
+onMounted(async () => {
+	await initAuth();
+
+	if (user.value) {
+		await loadCampaign();
+		await startOwlbear();
+	}
 });
 </script>
 
 <template>
 	<div
+		v-if="isAuthLoading"
+		class="auth-screen"
+	>
+		<div class="auth-card">
+			<h2>Dungeon of Asun</h2>
+			<p>Vérification de la session...</p>
+		</div>
+	</div>
+
+	<div
+		v-else-if="!user"
+		class="auth-screen"
+	>
+		<form
+			class="auth-card"
+			@submit.prevent="handleLogin"
+		>
+			<h2>Dungeon of Asun</h2>
+			<p>Connectez-vous pour accéder à vos fiches de personnage.</p>
+			<label for="auth-email">Adresse e-mail</label>
+			<input
+				id="auth-email"
+				v-model="loginEmail"
+				type="email"
+				autocomplete="username"
+				placeholder="vous@exemple.com"
+				required
+			/>
+			<label for="auth-password">Mot de passe</label>
+			<input
+				id="auth-password"
+				v-model="loginPassword"
+				type="password"
+				autocomplete="current-password"
+				placeholder="Mot de passe"
+				required
+			/>
+			<p
+				v-if="authError"
+				class="auth-error"
+			>
+				{{ authError }}
+			</p>
+			<button
+				type="submit"
+				:disabled="isAuthLoading"
+			>
+				{{ isAuthLoading ? 'Connexion...' : 'Se connecter' }}
+			</button>
+		</form>
+	</div>
+
+	<div
+		v-else
 		class="app-container"
 		:class="{ 'is-split': isChatDetached, 'chat-left': chatPosition === 'left' }"
 	>
@@ -604,7 +711,7 @@ onMounted(() => {
 							:key="char.id"
 							:value="char.id"
 						>
-							{{ char.name || 'Sans nom' }} {{ isGM && char.ownerIds.length === 0 ? '(PNJ/Monstre)' : '' }}
+							{{ char.name || 'Sans nom' }} {{ isGM && char.type === 'monster' ? '(PNJ/Monstre)' : '' }}
 						</option>
 					</select>
 					<!-- Bouton pour initialiser le token actuellement sélectionné sur la map -->
@@ -612,9 +719,17 @@ onMounted(() => {
 						v-if="isGM"
 						@click="openInitModal"
 						class="btn-add"
-						title="Initialiser une nouvelle fiche pour le pion sélectionné"
+						title="Créer une fiche de monstre pour le pion sélectionné"
 					>
-						<Plus :size="14" /> Initialiser Fiche
+						<Plus :size="14" /> Créer fiche monstre
+					</button>
+
+					<button
+						v-if="!isGM && availableTokens.length === 0"
+						@click="showCreateCharacterModal = true"
+						class="btn-add"
+					>
+						<Plus :size="14" /> Créer mon personnage
 					</button>
 
 					<div
@@ -623,18 +738,12 @@ onMounted(() => {
 						@click.self="showInitModal = false"
 					>
 						<div class="modal-card">
-							<h3>Initialiser le personnage</h3>
-							<p>Quel type de fiche souhaitez-vous créer pour ce pion ?</p>
+							<h3>Créer une fiche de monstre / PNJ</h3>
+							<p>Les fiches joueurs sont créées automatiquement à leur connexion.</p>
 
 							<div class="modal-actions">
 								<button
-									@click="confirmInit('pj')"
-									class="btn-modal btn-pj"
-								>
-									Personnage Joueur (Persistant par nom)
-								</button>
-								<button
-									@click="confirmInit('monster')"
+									@click="confirmInit"
 									class="btn-modal btn-monster"
 								>
 									Monstre / PNJ (Indépendant par pion)
@@ -648,6 +757,46 @@ onMounted(() => {
 								Annuler
 							</button>
 						</div>
+					</div>
+				</div>
+
+				<div
+					v-if="showCreateCharacterModal"
+					class="modal-overlay"
+					@click.self="showCreateCharacterModal = false"
+				>
+					<div class="modal-card">
+						<h3>Créer mon personnage</h3>
+						<p>Choisissez le nom de votre personnage pour créer votre fiche personnelle.</p>
+
+						<form @submit.prevent="confirmCreateCharacter">
+							<input
+								v-model="newCharacterName"
+								type="text"
+								placeholder="Nom du personnage"
+								maxlength="60"
+								autofocus
+								required
+							/>
+
+							<div class="modal-actions">
+								<button
+									type="submit"
+									class="btn-modal"
+									:disabled="isCreatingCharacter"
+								>
+									{{ isCreatingCharacter ? 'Création...' : 'Créer mon personnage' }}
+								</button>
+							</div>
+						</form>
+
+						<button
+							@click="showCreateCharacterModal = false"
+							class="btn-cancel"
+							:disabled="isCreatingCharacter"
+						>
+							Annuler
+						</button>
 					</div>
 				</div>
 
@@ -668,7 +817,7 @@ onMounted(() => {
 
 				<!-- ACCÈS RESTREINT -->
 				<div
-					v-else-if="!canEdit"
+					v-else-if="!canEdit && !isGM"
 					class="sheet-card restricted-card"
 				>
 					<div class="restricted-content">
@@ -2060,33 +2209,8 @@ onMounted(() => {
 							</div>
 						</div>
 					</div>
-
-					<!-- RESTRICTION MJ -->
-					<div
-						v-if="isGM"
-						class="gm-section"
-					>
-						<h3><Key :size="14" /> Joueurs autorisé</h3>
-						<div class="players-list">
-							<div
-								v-for="player in knownPlayers"
-								:key="player.id"
-								class="player-item"
-							>
-								<label>
-									<input
-										type="checkbox"
-										:checked="sheet.ownerIds.includes(player.id)"
-										@click="toggleOwner(player.id)"
-									/>
-									<span :style="{ color: player.color }">●</span> {{ player.name }}
-								</label>
-							</div>
-						</div>
-					</div>
 				</div>
 			</div>
-
 			<!-- ONGLET 2 : LANCEUR DE DÉS -->
 			<div
 				v-else-if="activeTab === 'roller'"
@@ -2505,44 +2629,38 @@ onMounted(() => {
 				<div class="gm-dashboard-container">
 					<!-- SECTION 1 : LA COMPAGNIE (JOUEURS) -->
 					<div class="chat-header">
-						<h3>La Compagnie ({{ partySheets.filter((c) => c.ownerIds.length > 0).length }} personnages)</h3>
+						<h3>Fiches joueurs connectés ({{ partySheets.filter((c) => c.type === 'pj').length }})</h3>
 					</div>
 
 					<div class="gm-global-infos">
 						<p>
 							Pv Global :
-							{{
-								partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.hpCurrent || 0), 0)
-							}}
+							{{ partySheets.filter((c) => c.type === 'pj').reduce((acc, char) => acc + (char.hpCurrent || 0), 0) }}
 							/
-							{{ partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.hpMax || 0), 0) }}
+							{{ partySheets.filter((c) => c.type === 'pj').reduce((acc, char) => acc + (char.hpMax || 0), 0) }}
 							({{
 								(
-									(partySheets
-										.filter((c) => c.ownerIds.length > 0)
-										.reduce((acc, char) => acc + (char.hpCurrent || 0), 0) /
-										partySheets
-											.filter((c) => c.ownerIds.length > 0)
-											.reduce((acc, char) => acc + (char.hpMax || 0), 0)) *
+									(partySheets.filter((c) => c.type === 'pj').reduce((acc, char) => acc + (char.hpCurrent || 0), 0) /
+										Math.max(
+											1,
+											partySheets.filter((c) => c.type === 'pj').reduce((acc, char) => acc + (char.hpMax || 0), 0),
+										)) *
 									100
 								).toFixed(0)
 							}}%)
 						</p>
 						<p>
 							Pe Global :
-							{{
-								partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.peCurrent || 0), 0)
-							}}
+							{{ partySheets.filter((c) => c.type === 'pj').reduce((acc, char) => acc + (char.peCurrent || 0), 0) }}
 							/
-							{{ partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.peMax || 0), 0) }}
+							{{ partySheets.filter((c) => c.type === 'pj').reduce((acc, char) => acc + (char.peMax || 0), 0) }}
 							({{
 								Math.round(
-									(partySheets
-										.filter((c) => c.ownerIds.length > 0)
-										.reduce((acc, char) => acc + (char.peCurrent || 0), 0) /
-										partySheets
-											.filter((c) => c.ownerIds.length > 0)
-											.reduce((acc, char) => acc + (char.peMax || 0), 0)) *
+									(partySheets.filter((c) => c.type === 'pj').reduce((acc, char) => acc + (char.peCurrent || 0), 0) /
+										Math.max(
+											1,
+											partySheets.filter((c) => c.type === 'pj').reduce((acc, char) => acc + (char.peMax || 0), 0),
+										)) *
 										100,
 								)
 							}}%)
@@ -2552,17 +2670,17 @@ onMounted(() => {
 							Blessures :
 							{{
 								partySheets
-									.filter((c) => c.ownerIds.length > 0)
+									.filter((c) => c.type === 'pj')
 									.reduce((acc, char) => acc + (char.wounds?.filter((w: boolean) => w).length || 0), 0)
 							}}
 							/
-							{{ partySheets.filter((c) => c.ownerIds.length > 0).length * 6 }}
+							{{ partySheets.filter((c) => c.type === 'pj').length * 6 }}
 							({{
 								Math.round(
 									(partySheets
-										.filter((c) => c.ownerIds.length > 0)
+										.filter((c) => c.type === 'pj')
 										.reduce((acc, char) => acc + (char.wounds?.filter((w: boolean) => w).length || 0), 0) /
-										(partySheets.filter((c) => c.ownerIds.length > 0).length * 6)) *
+										Math.max(1, partySheets.filter((c) => c.type === 'pj').length * 6)) *
 										100,
 								)
 							}}%)
@@ -2571,7 +2689,7 @@ onMounted(() => {
 							Moyenne :
 							{{
 								partySheets
-									.filter((c) => c.ownerIds.length > 0)
+									.filter((c) => c.type === 'pj')
 									.reduce((acc, char) => acc + (char.wounds?.filter((w: boolean) => w).length || 0), 0)
 							}}
 							/ 6
@@ -2580,25 +2698,24 @@ onMounted(() => {
 							Mourants / KO :
 							<span
 								:class="{
-									'text-danger': partySheets.filter((c) => c.ownerIds.length > 0 && (c.hpCurrent || 0) <= 0).length > 0,
+									'text-danger': partySheets.filter((c) => c.type === 'pj' && (c.hpCurrent || 0) <= 0).length > 0,
 								}"
 							>
-								{{ partySheets.filter((c) => c.ownerIds.length > 0 && (c.hpCurrent || 0) <= 0).length }}
+								{{ partySheets.filter((c) => c.type === 'pj' && (c.hpCurrent || 0) <= 0).length }}
 							</span>
 						</p>
 						<p>
 							Corruption :
-							{{
-								partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc, char) => acc + (char.corruption || 0), 0)
-							}}
+							{{ partySheets.filter((c) => c.type === 'pj').reduce((acc, char) => acc + (char.corruption || 0), 0) }}
 							/
-							{{ partySheets.filter((c) => c.ownerIds.length > 0).length * 20 }}
+							{{ partySheets.filter((c) => c.type === 'pj').length * 20 }}
 							({{
 								Math.round(
-									(partySheets
-										.filter((c) => c.ownerIds.length > 0)
-										.reduce((acc, char) => acc + (char.corruption || 0), 0) /
-										partySheets.filter((c) => c.ownerIds.length > 0).reduce((acc) => acc + 20, 0)) *
+									(partySheets.filter((c) => c.type === 'pj').reduce((acc, char) => acc + (char.corruption || 0), 0) /
+										Math.max(
+											1,
+											partySheets.filter((c) => c.type === 'pj').reduce((acc) => acc + 20, 0),
+										)) *
 										100,
 								)
 							}}%)
@@ -2606,22 +2723,27 @@ onMounted(() => {
 						<p>
 							Moyenne :
 							{{
-								partySheets
-									.filter((c) => c.ownerIds.length > 0)
-									.reduce((acc, char) => acc + (char.corruption || 0), 0) /
-								partySheets.filter((c) => c.ownerIds.length > 0).length
+								partySheets.filter((c) => c.type === 'pj').reduce((acc, char) => acc + (char.corruption || 0), 0) /
+								partySheets.filter((c) => c.type === 'pj').length
 							}}
 							/ 20
 						</p>
 						<p>
 							Sombre :
-							{{ partySheets.filter((c) => c.ownerIds.length > 0 && c.corruption >= 16).length }}
+							{{ partySheets.filter((c) => c.type === 'pj' && c.corruption >= 16).length }}
 						</p>
 					</div>
 
+					<div
+						v-if="partySheets.filter((c) => c.type === 'pj').length === 0"
+						class="empty-hint"
+					>
+						Aucune fiche joueur disponible. Les joueurs doivent ouvrir l'extension dans la Room pour initialiser leur
+						fiche personnelle.
+					</div>
 					<div class="party-grid">
 						<div
-							v-for="char in partySheets.filter((c) => c.ownerIds.length > 0)"
+							v-for="char in partySheets.filter((c) => c.type === 'pj')"
 							:key="char.id"
 							class="party-card"
 							:class="{
@@ -2630,20 +2752,34 @@ onMounted(() => {
 							}"
 						>
 							<div class="party-card-header">
-								<span class="party-char-name">{{ char.name || 'Inconnu' }}</span>
-								<button
-									@click="
-										async () => {
-											await focusAndSelectToken(char.id);
-											activeTab = 'sheet';
-											activeSubTab = 'favorites';
-										}
-									"
-									class="btn-add"
-									title="Sélectionner le token et ouvrir la fiche"
+								<span class="party-char-name"
+									>{{ char.name || 'Inconnu' }}
+									<small class="gm-player-owner"
+										>— {{ knownPlayers.find((p) => p.id === char.ownerIds[0])?.name || 'Joueur connecté' }}</small
+									></span
 								>
-									<Eye :size="12" /> Voir
-								</button>
+								<div style="display: flex; gap: 4px">
+									<button
+										@click="
+											async () => {
+												await focusAndSelectToken(char.id);
+												activeTab = 'sheet';
+												activeSubTab = 'favorites';
+											}
+										"
+										class="btn-add"
+										title="Cibler sur la carte"
+									>
+										<Eye :size="12" />
+									</button>
+									<button
+										@click="deleteMetadata(char)"
+										class="btn-add btn-damage"
+										title="Supprimer la fiche"
+									>
+										<Trash :size="12" />
+									</button>
+								</div>
 							</div>
 
 							<div class="party-card-stats">
@@ -2684,12 +2820,12 @@ onMounted(() => {
 						class="chat-header"
 						style="margin-top: 20px"
 					>
-						<h3>Gestion des Monstres & PNJ ({{ partySheets.filter((c) => c.ownerIds.length === 0).length }})</h3>
+						<h3>Fiches Monstres & PNJ ({{ partySheets.filter((c) => c.type === 'monster').length }})</h3>
 					</div>
 
 					<div class="party-grid">
 						<div
-							v-for="char in partySheets.filter((c) => c.ownerIds.length === 0)"
+							v-for="char in partySheets.filter((c) => c.type === 'monster')"
 							:key="char.id"
 							class="party-card monster-card"
 						>
@@ -3173,6 +3309,82 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.auth-screen {
+	font-family:
+		system-ui,
+		-apple-system,
+		sans-serif;
+	color: #f3f4f6;
+	background: #111827;
+	min-height: 100vh;
+	width: 100%;
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 20px;
+}
+.auth-card {
+	width: 100%;
+	max-width: 340px;
+	box-sizing: border-box;
+	background: #1f2937;
+	border: 1px solid #374151;
+	border-radius: 10px;
+	padding: 22px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+.auth-card h2 {
+	margin: 0;
+	color: #f3f4f6;
+	font-size: 1.2rem;
+}
+.auth-card p {
+	margin: 0 0 6px;
+	color: #9ca3af;
+	font-size: 0.8rem;
+}
+.auth-card label {
+	color: #d1d5db;
+	font-size: 0.75rem;
+	font-weight: 600;
+}
+.auth-card input {
+	width: 100%;
+	box-sizing: border-box;
+	background: #111827;
+	border: 1px solid #4b5563;
+	border-radius: 5px;
+	color: #fff;
+	padding: 9px 10px;
+	font-size: 0.85rem;
+}
+.auth-card button {
+	margin-top: 6px;
+	background: #2563eb;
+	border: 1px solid #3b82f6;
+	border-radius: 5px;
+	color: #fff;
+	padding: 10px;
+	font-weight: bold;
+	cursor: pointer;
+}
+.auth-card button:disabled {
+	opacity: 0.6;
+	cursor: wait;
+}
+.auth-card .auth-error {
+	color: #fca5a5;
+	background: #7f1d1d40;
+	border: 1px solid #7f1d1d;
+	border-radius: 5px;
+	padding: 8px;
+	margin: 0;
+	word-break: break-word;
+}
+
 /* 1. VERRU : Empêche le conteneur global de scroller */
 .app-container {
 	font-family:
@@ -5431,5 +5643,31 @@ input[type='number'] {
 	width: 34px;
 	font-size: 0.75rem;
 	padding: 1px;
+}
+</style>
+
+<style scoped>
+.sheet-card.gm-player-sheet-readonly input,
+.sheet-card.gm-player-sheet-readonly select,
+.sheet-card.gm-player-sheet-readonly textarea,
+.sheet-card.gm-player-sheet-readonly button {
+	pointer-events: none;
+	opacity: 0.82;
+}
+.gm-readonly-notice {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	margin-bottom: 10px;
+	border: 1px solid rgba(180, 145, 90, 0.35);
+	border-radius: 6px;
+	color: #c6a875;
+	font-size: 12px;
+}
+.gm-player-owner {
+	font-size: 11px;
+	font-weight: normal;
+	opacity: 0.7;
 }
 </style>
