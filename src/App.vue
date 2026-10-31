@@ -46,6 +46,7 @@ import {
 	GripVertical,
 	BookOpenText,
 	User,
+	UserPlus,
 } from 'lucide-vue-next';
 
 // Gestion des largeurs de la pop-over OBR pour le mode split (Fiche + Chat)
@@ -694,7 +695,10 @@ onMounted(async () => {
 
 			<!-- ONGLET 1 : FICHE DE PERSONNAGE -->
 			<div v-else-if="activeTab === 'sheet'">
-				<div class="character-selector-bar">
+				<div
+					class="character-selector-bar"
+					v-if="isGM || availableTokens.length > 0"
+				>
 					<label class="selector-label"><Scroll :size="14" /> Fiche active :</label>
 					<select
 						v-model="currentSheetTokenId"
@@ -722,7 +726,7 @@ onMounted(async () => {
 						class="btn-add"
 						title="Créer une fiche de monstre pour le pion sélectionné"
 					>
-						<Plus :size="14" /> Créer fiche monstre
+						<Plus :size="14" /> Créer fiche
 					</button>
 
 					<button
@@ -730,7 +734,7 @@ onMounted(async () => {
 						@click="showCreateCharacterModal = true"
 						class="btn-add"
 					>
-						<Plus :size="14" /> Créer un personnage
+						<Plus :size="14" /> Créer fiche
 					</button>
 
 					<div
@@ -747,7 +751,7 @@ onMounted(async () => {
 									@click="confirmInit"
 									class="btn-modal btn-monster"
 								>
-									Monstre / PNJ (Indépendant par pion)
+									Monstre / PNJ
 								</button>
 							</div>
 
@@ -805,16 +809,16 @@ onMounted(async () => {
 				<!-- SI AUCUN TOKEN SÉLECTIONNÉ -->
 				<div
 					v-if="!currentSheetTokenId && availableTokens.length > 0"
-					class="status-msg"
+					class="sheet-card no-sheet-card"
 				>
 					<div class="no-sheet-content">
 						<User
 							:size="32"
 							class="no-sheet-icon-svg"
 						/>
-						<h3>Aucune fiche Sélectionnée</h3>
+						<h3>Aucune fiche sélectionnée</h3>
 						<p>Veuillez sélectionner un personnage dans le menu ci-dessus..</p>
-						<p>ou Veuillez en créer une nouvelle puis la sélectionnée.</p>
+						<h3>OU</h3>
 						<button
 							v-if="!isGM"
 							@click="showCreateCharacterModal = true"
@@ -829,7 +833,7 @@ onMounted(async () => {
 					class="sheet-card no-sheet-card"
 				>
 					<div class="no-sheet-content">
-						<User
+						<UserPlus
 							:size="32"
 							class="no-sheet-icon-svg"
 						/>
@@ -4832,7 +4836,7 @@ onMounted(async () => {
 	color: white;
 	border: 1px solid #4b5563;
 	border-radius: 6px;
-	padding: 10px 0;
+	padding: 10px;
 	font-size: 0.9rem;
 	font-weight: bold;
 	cursor: pointer;
@@ -5221,7 +5225,7 @@ onMounted(async () => {
 	align-items: center;
 	min-height: 250px;
 	background: #111827;
-	border: 1px solid #1e3a8a;
+	border: 1px solid #1d4ed8;
 }
 .no-sheet-content {
 	text-align: center;
@@ -5229,15 +5233,15 @@ onMounted(async () => {
 	display: flex;
 	flex-direction: column;
 	align-items: center;
-	gap: 8px;
+	gap: 24px;
 }
 .no-sheet-icon-svg {
-	color: #1d4ed8;
+	color: #3b82f6;
 }
 .no-sheet-content h3 {
 	margin: 0;
 	font-size: 1rem;
-	color: #1d4ed8;
+	color: #3b82f6;
 }
 .no-sheet-content p {
 	margin: 0;
