@@ -568,7 +568,7 @@ export function useOwlbear() {
 		saveTimeoutId = setTimeout(() => {
 			saveTimeoutId = null;
 			void executeSaveSheet();
-		}, 5000);
+		}, 500);
 	}
 
 	function saveSheet() {

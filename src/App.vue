@@ -818,7 +818,7 @@ onMounted(async () => {
 						/>
 						<h3>Aucune fiche sélectionnée</h3>
 						<p>Veuillez sélectionner un personnage dans le menu ci-dessus..</p>
-						<h3>OU</h3>
+						<h3 v-if="!isGM">OU</h3>
 						<button
 							v-if="!isGM"
 							@click="showCreateCharacterModal = true"
