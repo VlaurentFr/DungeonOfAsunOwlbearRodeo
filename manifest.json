@@ -1,10 +1,10 @@
 {
-  "name": "Fiche de Personnage - Dungeon of Asun",
-  "version": "2.1.3",
+  "name": "Fiche de Personnage++ - Dungeon of Asun",
+  "version": "2.2.0",
   "manifest_version": 1,
   "icon": "https://vlaurentfr.github.io/DungeonOfAsunOwlbearRodeo/favicon.svg",
   "action": {
-    "title": "Fiche de Personnage",
+    "title": "Dungeon of Asun",
     "icon": "https://vlaurentfr.github.io/DungeonOfAsunOwlbearRodeo/favicon.svg",
     "popover": "https://vlaurentfr.github.io/DungeonOfAsunOwlbearRodeo/",
     "height": 720,
