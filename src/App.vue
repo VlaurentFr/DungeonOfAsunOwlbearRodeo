@@ -9,6 +9,7 @@ import draggable from 'vuedraggable';
 
 // Importation des icônes propres depuis Lucide (avec CheckCircle2 et XCircle)
 import {
+	ArrowDownRight,
 	Scroll,
 	ScrollText,
 	Dices,
@@ -52,6 +53,55 @@ import {
 // Gestion des largeurs de la pop-over OBR pour le mode split (Fiche + Chat)
 const POPOVER_WIDTH_NORMAL = 620;
 const POPOVER_WIDTH_SPLIT = 900;
+
+// Redimensionnement manuel de la popover Owlbear
+const MIN_POPOVER_WIDTH = 500;
+const MAX_POPOVER_WIDTH = 1200;
+const MIN_POPOVER_HEIGHT = 500;
+const MAX_POPOVER_HEIGHT = 1200;
+
+const isResizingPopover = ref(false);
+
+let resizeStartX = 0;
+let resizeStartY = 0;
+let initialWidth = 0;
+let initialHeight = 0;
+
+async function startPopoverResize(event: PointerEvent) {
+	event.preventDefault();
+
+	isResizingPopover.value = true;
+
+	resizeStartX = event.clientX;
+	resizeStartY = event.clientY;
+
+	initialWidth = (await OBR.action.getWidth()) ?? POPOVER_WIDTH_NORMAL;
+	initialHeight = (await OBR.action.getHeight()) ?? POPOVER_WIDTH_NORMAL;
+
+	window.addEventListener('pointermove', resizePopover);
+	window.addEventListener('pointerup', stopPopoverResize);
+}
+
+async function resizePopover(event: PointerEvent) {
+	if (!isResizingPopover.value) return;
+
+	const deltaX = event.clientX - resizeStartX;
+	const deltaY = event.clientY - resizeStartY;
+
+	const newWidth = Math.min(MAX_POPOVER_WIDTH, Math.max(MIN_POPOVER_WIDTH, initialWidth + deltaX));
+
+	const newHeight = Math.min(MAX_POPOVER_HEIGHT, Math.max(MIN_POPOVER_HEIGHT, initialHeight + deltaY));
+
+	await OBR.action.setWidth(newWidth);
+	await OBR.action.setHeight(newHeight);
+}
+
+function stopPopoverResize() {
+	isResizingPopover.value = false;
+
+	window.removeEventListener('pointermove', resizePopover);
+	window.removeEventListener('pointerup', stopPopoverResize);
+}
 
 const isChatDetached = ref(false);
 const chatPosition = ref<'left' | 'right'>('left');
@@ -3351,10 +3401,39 @@ onMounted(async () => {
 				</div>
 			</div>
 		</aside>
+		<!-- Poignée de redimensionnement de la popover -->
+		<div
+			class="popover-resize-handle"
+			@pointerdown="startPopoverResize"
+			title="Redimensionner la fenêtre"
+		>
+			<ArrowDownRight :size="18" />
+		</div>
 	</div>
 </template>
 
 <style scoped>
+.popover-resize-handle {
+	position: absolute;
+	right: 2px;
+	bottom: 2px;
+	width: 24px;
+	height: 24px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: #a1a1aa;
+	cursor: nwse-resize;
+	opacity: 0.55;
+	z-index: 9999;
+	touch-action: none;
+}
+
+.popover-resize-handle:hover {
+	opacity: 1;
+	color: #d4a85c;
+}
+
 .auth-screen {
 	font-family:
 		system-ui,
