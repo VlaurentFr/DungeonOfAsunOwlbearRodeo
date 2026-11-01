@@ -3424,14 +3424,15 @@ onMounted(async () => {
 	justify-content: center;
 	color: #a1a1aa;
 	cursor: nwse-resize;
-	opacity: 0.55;
+	opacity: 0.75;
 	z-index: 9999;
 	touch-action: none;
+	background-color: #8b5cf6;
+	border-radius: 8px;
 }
 
 .popover-resize-handle:hover {
 	opacity: 1;
-	color: #d4a85c;
 }
 
 .auth-screen {
