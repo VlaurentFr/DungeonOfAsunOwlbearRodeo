@@ -620,7 +620,7 @@ const sizePanel = ref([620, 920, 1080]);
 const sizePanelDetach = ref([920, 1080, 1200]);
 // const indexPanelSize = ref(0);
 
-async function setPanelSize(index) {
+async function setPanelSize(index: number) {
 	// if (indexPanelSize.value === sizePanel.value.length - 1) {
 	// 	indexPanelSize.value = 0;
 	// } else {
