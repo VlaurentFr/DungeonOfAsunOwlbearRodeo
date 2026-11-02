@@ -52,7 +52,7 @@ import {
 
 // Gestion des largeurs de la pop-over OBR pour le mode split (Fiche + Chat)
 const POPOVER_WIDTH_NORMAL = 620;
-const POPOVER_WIDTH_SPLIT = 900;
+const POPOVER_WIDTH_SPLIT = 920;
 
 // Redimensionnement manuel de la popover Owlbear
 const MIN_POPOVER_WIDTH = 500;
@@ -616,6 +616,29 @@ function triggerFileInput() {
 	fileInputRef.value?.click();
 }
 
+const sizePanel = ref([620, 920, 1080]);
+const sizePanelDetach = ref([920, 1080, 1200]);
+// const indexPanelSize = ref(0);
+
+async function setPanelSize(index) {
+	// if (indexPanelSize.value === sizePanel.value.length - 1) {
+	// 	indexPanelSize.value = 0;
+	// } else {
+	// 	indexPanelSize.value++;
+	// }
+
+	// if (isChatDetached.value) {
+	// 	await OBR.action.setWidth(sizePanelDetach.value[indexPanelSize.value]);
+	// } else {
+	// 	await OBR.action.setWidth(sizePanel.value[indexPanelSize.value]);
+	// }
+	if (isChatDetached.value) {
+		await OBR.action.setWidth(sizePanelDetach.value[index]);
+	} else {
+		await OBR.action.setWidth(sizePanel.value[index]);
+	}
+}
+
 onMounted(async () => {
 	await initAuth();
 
@@ -739,6 +762,32 @@ onMounted(async () => {
 				>
 					<BookOpenText :size="16" /> Aides
 				</button>
+				<div
+					style="display: flex; flex: 1; justify-content: flex-end; gap: 8px"
+					v-if="isChatDetached"
+				>
+					<button
+						v-for="(size, index) in sizePanelDetach"
+						class="btn-size"
+						@click="setPanelSize(index)"
+						:key="size"
+					>
+						{{ size }}px
+					</button>
+				</div>
+				<div
+					style="display: flex; flex: 1; justify-content: flex-end; gap: 8px"
+					v-if="!isChatDetached"
+				>
+					<button
+						v-for="(size, index) in sizePanel"
+						class="btn-size"
+						@click="setPanelSize(index)"
+						:key="size"
+					>
+						{{ size }}px
+					</button>
+				</div>
 			</div>
 
 			<div
@@ -5827,5 +5876,13 @@ input[type='number'] {
 	font-size: 11px;
 	font-weight: normal;
 	opacity: 0.7;
+}
+.btn-size {
+	border: solid 1px;
+	border-radius: 8px;
+	background: #1f2937;
+	color: #38bdf8;
+	border-color: #3b82f6;
+	padding: 4px 8px;
 }
 </style>
