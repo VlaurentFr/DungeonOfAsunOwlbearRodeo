@@ -354,12 +354,9 @@ export function useOwlbear() {
 
 		const now = new Date();
 		const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-		const infos =
-			logEntry?.isCritFailure && logEntry?.statValue === undefined
-				? 'Echec critique: Gagnez 1 point de corruption et Perdez 1 point de Qualité sur votre arme '
-				: logEntry?.isCritFailure && logEntry?.statValue
-					? 'Echec critique: Gagnez 1d6 de corruption'
-					: '';
+		const infos = logEntry?.isCritFailure
+			? 'Echec critique: Gagnez 1 point de corruption et Perdez 1 point de Qualité sur votre arme ou Gagnez 1d6 de corruption'
+			: '';
 
 		const message: ChatMessage = {
 			id: Date.now().toString(),
