@@ -2681,6 +2681,12 @@ onMounted(async () => {
 							>
 								{{ msg.details }}
 							</div>
+							<div
+								v-if="msg.infos && msg.isRoll"
+								class="log-details"
+							>
+								{{ msg.infos }}
+							</div>
 
 							<div
 								v-if="msg.isSuccess !== undefined && msg.isRoll"
@@ -3364,6 +3370,12 @@ onMounted(async () => {
 							class="log-details"
 						>
 							{{ msg.details }}
+						</div>
+						<div
+							v-if="msg.infos && msg.isRoll"
+							class="log-details"
+						>
+							{{ msg.infos }}
 						</div>
 
 						<div
